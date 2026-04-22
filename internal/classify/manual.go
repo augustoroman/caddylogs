@@ -31,18 +31,30 @@ func ValidManualTag(t ManualTag) bool {
 	return false
 }
 
+// SourceManual is the source label for operator-applied tags (via the
+// dashboard's right-click menu or the /api/tag endpoint). Classifier-
+// applied tags use the classifier's name as their source.
+const SourceManual = "manual"
+
 // ManualTagEntry is a single tagged IP with the time it was set. Stored
-// in memory and serialized to the tags file.
+// in memory and serialized to the tags file. Source records who applied
+// the tag (SourceManual, or a classifier name); Reason is an optional
+// human-readable explanation stored with classifier tags so the UI can
+// show what heuristic fired.
 type ManualTagEntry struct {
-	Tag ManualTag `json:"tag"`
-	At  int64     `json:"at"` // unix nanoseconds
+	Tag    ManualTag `json:"tag"`
+	At     int64     `json:"at"` // unix nanoseconds
+	Source string    `json:"source,omitempty"`
+	Reason string    `json:"reason,omitempty"`
 }
 
 // ManualTagListEntry is the listing-form, including the IP key.
 type ManualTagListEntry struct {
-	IP  string    `json:"ip"`
-	Tag ManualTag `json:"tag"`
-	At  int64     `json:"at"`
+	IP     string    `json:"ip"`
+	Tag    ManualTag `json:"tag"`
+	At     int64     `json:"at"`
+	Source string    `json:"source,omitempty"`
+	Reason string    `json:"reason,omitempty"`
 }
 
 // ManualTagSet is a concurrent-safe in-memory map of IP → tag with
@@ -100,6 +112,15 @@ func (s *ManualTagSet) load() error {
 		return fmt.Errorf("parse tags file %q: %w", s.path, err)
 	}
 	if m != nil {
+		// Forward-migrate pre-source entries: anything without a source
+		// field was written before classifiers existed, so by definition
+		// it came from the operator.
+		for ip, e := range m {
+			if e.Source == "" {
+				e.Source = SourceManual
+				m[ip] = e
+			}
+		}
 		s.m = m
 	}
 	return nil
@@ -145,31 +166,48 @@ func (s *ManualTagSet) Save() error {
 }
 
 // Put records a tag in memory without writing to disk. Callers that want
-// durability follow with Save (or use Set, which combines both).
+// durability follow with Save (or use Set, which combines both). Source
+// defaults to SourceManual when empty so legacy callers behave the same.
 func (s *ManualTagSet) Put(ip string, t ManualTag) {
-	s.PutAt(ip, t, time.Now().UnixNano())
+	s.PutAt(ip, t, time.Now().UnixNano(), SourceManual, "")
 }
 
-// PutAt is Put with a caller-supplied timestamp — used when migrating
-// existing tags so the "since" column in the UI keeps its original value.
-func (s *ManualTagSet) PutAt(ip string, t ManualTag, at int64) {
+// PutAt is Put with caller-supplied timestamp, source, and reason. Used
+// by the classifier runner and by the migration path (which preserves
+// the original timestamps from the DB so the UI's "since" column stays
+// meaningful).
+func (s *ManualTagSet) PutAt(ip string, t ManualTag, at int64, source, reason string) {
 	if s == nil {
 		return
 	}
+	if source == "" {
+		source = SourceManual
+	}
 	s.mu.Lock()
-	s.m[ip] = ManualTagEntry{Tag: t, At: at}
+	s.m[ip] = ManualTagEntry{Tag: t, At: at, Source: source, Reason: reason}
 	s.mu.Unlock()
 }
 
-// Set records a tag and persists it atomically. A save error bubbles up
-// so the caller (typically the /api/tag handler) can surface it.
+// Set records an operator-applied tag and persists it atomically. A save
+// error bubbles up so the caller (typically the /api/tag handler) can
+// surface it. The source is hardcoded to SourceManual — classifier hooks
+// go through SetFrom.
 func (s *ManualTagSet) Set(ip string, t ManualTag) error {
+	return s.SetFrom(ip, t, SourceManual, "")
+}
+
+// SetFrom records a tag with a specific source (e.g. a classifier name)
+// and reason, and persists atomically.
+func (s *ManualTagSet) SetFrom(ip string, t ManualTag, source, reason string) error {
 	if s == nil {
 		return nil
 	}
+	if source == "" {
+		source = SourceManual
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.m[ip] = ManualTagEntry{Tag: t, At: time.Now().UnixNano()}
+	s.m[ip] = ManualTagEntry{Tag: t, At: time.Now().UnixNano(), Source: source, Reason: reason}
 	return s.saveLocked()
 }
 
@@ -208,6 +246,17 @@ func (s *ManualTagSet) Count() int {
 
 // List returns a snapshot of all tags, sorted most-recent-first.
 func (s *ManualTagSet) List() []ManualTagListEntry {
+	return s.listMatching("")
+}
+
+// ListBySource returns only tags whose source equals source (e.g. a
+// classifier name) — used by the classifier runner's diff to figure out
+// which tags it previously applied.
+func (s *ManualTagSet) ListBySource(source string) []ManualTagListEntry {
+	return s.listMatching(source)
+}
+
+func (s *ManualTagSet) listMatching(source string) []ManualTagListEntry {
 	if s == nil {
 		return nil
 	}
@@ -215,7 +264,12 @@ func (s *ManualTagSet) List() []ManualTagListEntry {
 	defer s.mu.RUnlock()
 	out := make([]ManualTagListEntry, 0, len(s.m))
 	for ip, e := range s.m {
-		out = append(out, ManualTagListEntry{IP: ip, Tag: e.Tag, At: e.At})
+		if source != "" && e.Source != source {
+			continue
+		}
+		out = append(out, ManualTagListEntry{
+			IP: ip, Tag: e.Tag, At: e.At, Source: e.Source, Reason: e.Reason,
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].At > out[j].At })
 	return out

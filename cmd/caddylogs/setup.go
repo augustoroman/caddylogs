@@ -303,7 +303,7 @@ func loadManualTags(ctx context.Context, store *sqlitestore.Store, cls *classify
 	if set.Count() == 0 {
 		var migrated int
 		err := store.WithManualTags(ctx, func(ip string, tag classify.ManualTag, at int64) {
-			set.PutAt(ip, tag, at)
+			set.PutAt(ip, tag, at, classify.SourceManual, "")
 			migrated++
 		})
 		if err != nil {
