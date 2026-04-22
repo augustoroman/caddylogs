@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/augustoroman/caddylogs/internal/progress"
 )
 
 // AttackerThresholds controls behavioral flagging of IPs that aren't caught
@@ -24,11 +26,15 @@ var DefaultThresholds = AttackerThresholds{
 // ComputeBehavioralAttackers returns a map of (ip → reason) of IPs that the
 // behavioral heuristic believes to be malicious. This queries all three
 // tables because a promotion pass may not have run yet.
-func (s *Store) ComputeBehavioralAttackers(ctx context.Context, t AttackerThresholds) (map[string]string, error) {
+func (s *Store) ComputeBehavioralAttackers(ctx context.Context, t AttackerThresholds, p progress.Func) (map[string]string, error) {
+	if p == nil {
+		p = progress.Nop
+	}
 	out := map[string]string{}
 
 	// Rule A: any IP with >= MinAttackHits rows already in requests_malicious.
 	if t.MinAttackHits > 0 {
+		p("behavioral", "rule A: IPs with repeated attack URIs", -1, -1)
 		rows, err := s.db.QueryContext(ctx, `
             SELECT ip, COUNT(*) FROM requests_malicious
             GROUP BY ip HAVING COUNT(*) >= ?`, t.MinAttackHits)
@@ -50,6 +56,7 @@ func (s *Store) ComputeBehavioralAttackers(ctx context.Context, t AttackerThresh
 	// Rule B: high 4xx rate across the whole union. We do this per table and
 	// merge, because one IP could be split between tables.
 	if t.MinHits > 0 {
+		p("behavioral", "rule B: IPs with high 4xx rate", -1, -1)
 		// Aggregate hits + 4xx count per IP across dynamic + static + malicious.
 		const q = `
             SELECT ip, SUM(hits), SUM(err)
@@ -85,69 +92,104 @@ func (s *Store) ComputeBehavioralAttackers(ctx context.Context, t AttackerThresh
 		rows.Close()
 	}
 
+	p("behavioral", fmt.Sprintf("identified %d attacker IPs", len(out)), int64(len(out)), int64(len(out)))
 	return out, nil
 }
 
 // PromoteFlaggedIPs moves every row owned by an IP in ips (keyed by IP,
 // value = reason) from requests_dynamic and requests_static into
-// requests_malicious. The per-row malicious_reason is set to the IP-level
-// reason so the UI can show why an otherwise-benign-looking request was
-// relocated.
-func (s *Store) PromoteFlaggedIPs(ctx context.Context, ips map[string]string) (int64, error) {
+// requests_malicious. Each moved row's malicious_reason is set to the
+// IP-level reason from ips so the UI can show why an otherwise-benign-
+// looking request was relocated.
+//
+// Implementation: a temporary ephemeral `flagged_ips(ip, reason)` table is
+// populated with the caller's set, then a single INSERT ... SELECT ... JOIN
+// + DELETE pair runs per source table. With the ip index in place (see
+// BuildPreIngestIndexes) the JOIN is O(|ips|) index lookups rather than the
+// O(|ips| × rows) per-IP loop the previous implementation performed. At
+// 900k rows and ~500 flagged IPs this takes seconds instead of minutes.
+func (s *Store) PromoteFlaggedIPs(ctx context.Context, ips map[string]string, p progress.Func) (int64, error) {
+	if p == nil {
+		p = progress.Nop
+	}
 	if len(ips) == 0 {
 		return 0, nil
 	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
 
-	// Moving row-by-row with parameterized IP + reason, per source table. The
-	// INSERT column lists are identical across tables, and we set
-	// malicious_reason to the supplied IP reason (overriding whatever may
-	// have been there for non-malicious rows).
-	moveSQL := func(src string) string {
-		return fmt.Sprintf(`
-            INSERT INTO requests_malicious (
-                %[1]s
-            ) SELECT
-                ts, status, status_class, method, host, uri, ip, country, city,
-                browser, os, device, duration_ns, size, bytes_read, proto,
-                is_bot, is_local, is_static, ?,
-                user_agent, referer, visitor_hash
-              FROM %[2]s WHERE ip = ?`, insertColumnList, src)
+	if _, err := tx.ExecContext(ctx,
+		`CREATE TEMP TABLE IF NOT EXISTS flagged_ips (ip TEXT PRIMARY KEY, reason TEXT NOT NULL)`,
+	); err != nil {
+		return 0, err
 	}
-	dynMove := moveSQL("requests_dynamic")
-	statMove := moveSQL("requests_static")
-	dynDel := `DELETE FROM requests_dynamic WHERE ip = ?`
-	statDel := `DELETE FROM requests_static  WHERE ip = ?`
+	if _, err := tx.ExecContext(ctx, `DELETE FROM flagged_ips`); err != nil {
+		return 0, err
+	}
+	p("promote", fmt.Sprintf("loading %d flagged IPs", len(ips)), 0, int64(len(ips)))
 
-	var moved int64
+	ins, err := tx.PrepareContext(ctx, `INSERT INTO flagged_ips(ip, reason) VALUES (?, ?)`)
+	if err != nil {
+		return 0, err
+	}
+	var i int64
 	for ip, reason := range ips {
 		if err := ctx.Err(); err != nil {
-			return moved, err
+			ins.Close()
+			return 0, err
 		}
-		if res, err := tx.ExecContext(ctx, dynMove, reason, ip); err == nil {
-			n, _ := res.RowsAffected()
-			moved += n
-		} else {
-			return moved, err
+		if _, err := ins.ExecContext(ctx, ip, reason); err != nil {
+			ins.Close()
+			return 0, err
 		}
-		if _, err := tx.ExecContext(ctx, dynDel, ip); err != nil {
-			return moved, err
-		}
-		if res, err := tx.ExecContext(ctx, statMove, reason, ip); err == nil {
-			n, _ := res.RowsAffected()
-			moved += n
-		} else {
-			return moved, err
-		}
-		if _, err := tx.ExecContext(ctx, statDel, ip); err != nil {
-			return moved, err
+		i++
+		if i%1000 == 0 {
+			p("promote", "loading flagged IPs", i, int64(len(ips)))
 		}
 	}
-	return moved, tx.Commit()
+	ins.Close()
+
+	movePair := func(src string, phase string) (int64, error) {
+		p("promote", "relocating rows from "+src, -1, -1)
+		moveSQL := fmt.Sprintf(`
+            INSERT INTO requests_malicious (%[1]s)
+            SELECT ts, status, status_class, method, host, uri, r.ip, country, city,
+                   browser, os, device, duration_ns, size, bytes_read, proto,
+                   is_bot, is_local, is_static, f.reason,
+                   user_agent, referer, visitor_hash
+              FROM %[2]s r
+              JOIN flagged_ips f ON r.ip = f.ip`, insertColumnList, src)
+		res, err := tx.ExecContext(ctx, moveSQL)
+		if err != nil {
+			return 0, err
+		}
+		moved, _ := res.RowsAffected()
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM %s WHERE ip IN (SELECT ip FROM flagged_ips)`, src),
+		); err != nil {
+			return moved, err
+		}
+		p("promote", fmt.Sprintf("relocated %d rows from %s", moved, src), moved, moved)
+		return moved, nil
+	}
+
+	var total int64
+	n, err := movePair("requests_dynamic", "dyn")
+	total += n
+	if err != nil {
+		return total, err
+	}
+	n, err = movePair("requests_static", "static")
+	total += n
+	if err != nil {
+		return total, err
+	}
+	p("promote", "committing", -1, -1)
+	return total, tx.Commit()
 }
 
 // ClassificationCounts returns the six-cell breakdown used by the dashboard

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/augustoroman/caddylogs/internal/parser"
+	"github.com/augustoroman/caddylogs/internal/progress"
 )
 
 // Store is the narrow interface every backend must satisfy. All methods are
@@ -25,8 +26,9 @@ type Store interface {
 	// MarkIngestComplete signals that an initial bulk ingest has finished.
 	// Implementations may use this to build secondary indices, analyze
 	// statistics, or flip the store from an append-optimized state to a
-	// query-optimized one.
-	MarkIngestComplete(ctx context.Context) error
+	// query-optimized one. p is called with phase/detail/done/total updates
+	// for any long-running sub-step.
+	MarkIngestComplete(ctx context.Context, p progress.Func) error
 
 	// Close releases resources.
 	Close() error

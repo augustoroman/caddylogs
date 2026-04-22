@@ -40,19 +40,26 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 `
 
-// indexStatements are applied at MarkIngestComplete time.
-var indexStatements = []string{
+// preIngestIndexes are the indexes required for PromoteFlaggedIPs to run
+// in O(flagged_ips) rather than O(flagged_ips × table_size). They are
+// created after bulk ingest but before behavioral analysis + promotion.
+var preIngestIndexes = []string{
+	`CREATE INDEX IF NOT EXISTS idx_dyn_ip   ON requests_dynamic(ip)`,
+	`CREATE INDEX IF NOT EXISTS idx_stat_ip  ON requests_static(ip)`,
+	`CREATE INDEX IF NOT EXISTS idx_mal_ip   ON requests_malicious(ip)`,
+}
+
+// postIngestIndexes are the remaining indexes the panel queries use. They
+// are built once promotion is done so they don't slow promotion itself.
+var postIngestIndexes = []string{
 	`CREATE INDEX IF NOT EXISTS idx_dyn_ts       ON requests_dynamic(ts)`,
-	`CREATE INDEX IF NOT EXISTS idx_dyn_ip       ON requests_dynamic(ip)`,
 	`CREATE INDEX IF NOT EXISTS idx_dyn_isbot    ON requests_dynamic(is_bot)`,
 	`CREATE INDEX IF NOT EXISTS idx_dyn_islocal  ON requests_dynamic(is_local)`,
 	`CREATE INDEX IF NOT EXISTS idx_dyn_status   ON requests_dynamic(status)`,
 	`CREATE INDEX IF NOT EXISTS idx_dyn_host     ON requests_dynamic(host)`,
 	`CREATE INDEX IF NOT EXISTS idx_stat_ts      ON requests_static(ts)`,
-	`CREATE INDEX IF NOT EXISTS idx_stat_ip      ON requests_static(ip)`,
 	`CREATE INDEX IF NOT EXISTS idx_stat_isbot   ON requests_static(is_bot)`,
 	`CREATE INDEX IF NOT EXISTS idx_mal_ts       ON requests_malicious(ts)`,
-	`CREATE INDEX IF NOT EXISTS idx_mal_ip       ON requests_malicious(ip)`,
 	`CREATE INDEX IF NOT EXISTS idx_mal_status   ON requests_malicious(status)`,
 	`CREATE INDEX IF NOT EXISTS idx_mal_isstatic ON requests_malicious(is_static)`,
 	`CREATE INDEX IF NOT EXISTS idx_mal_reason   ON requests_malicious(malicious_reason)`,

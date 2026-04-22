@@ -4,23 +4,34 @@ import (
 	"context"
 
 	"github.com/augustoroman/caddylogs/internal/classify"
+	"github.com/augustoroman/caddylogs/internal/progress"
 	"github.com/augustoroman/caddylogs/internal/sqlitestore"
 )
 
-// FinalizeAttacks is called once after BulkFromFiles completes. It unions
-// the IPs the classifier flagged via URI pattern match with the IPs a
-// behavioral pass over the store turned up, teaches the classifier the
-// combined set (so live tail routes them correctly), and moves all of
-// their existing dynamic+static rows into the malicious table. Returns the
-// number of IPs flagged and rows relocated.
-func FinalizeAttacks(ctx context.Context, store *sqlitestore.Store, cls *classify.Classifier, thresh sqlitestore.AttackerThresholds) (ips int, rowsMoved int64, err error) {
+// FinalizeAttacks runs once after BulkFromFiles. It:
+//   1. builds the ip indexes needed for fast promotion,
+//   2. unions the classifier's URI-flagged IPs with the store's behavioral
+//      attackers,
+//   3. teaches the classifier the combined set so the live tail routes
+//      subsequent rows directly to requests_malicious, and
+//   4. moves every existing dynamic+static row belonging to a flagged IP
+//      over to requests_malicious in a single JOIN-based pass per table.
+//
+// Returns the number of IPs flagged and rows relocated.
+func FinalizeAttacks(ctx context.Context, store *sqlitestore.Store, cls *classify.Classifier, thresh sqlitestore.AttackerThresholds, prog progress.Func) (ips int, rowsMoved int64, err error) {
+	if prog == nil {
+		prog = progress.Nop
+	}
+	if err := store.BuildPreIngestIndexes(ctx, prog); err != nil {
+		return 0, 0, err
+	}
 	all := map[string]string{}
 	if cls != nil && cls.Attacks != nil {
 		for ip, reason := range cls.Attacks.FlaggedIPs() {
 			all[ip] = reason
 		}
 	}
-	behavioral, err := store.ComputeBehavioralAttackers(ctx, thresh)
+	behavioral, err := store.ComputeBehavioralAttackers(ctx, thresh, prog)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -29,14 +40,11 @@ func FinalizeAttacks(ctx context.Context, store *sqlitestore.Store, cls *classif
 			all[ip] = reason
 		}
 	}
-	// Feed the combined set back into the classifier so new rows via live
-	// tail are routed directly to malicious without waiting for another
-	// promotion pass.
 	if cls != nil && cls.Attacks != nil {
 		for ip, reason := range all {
 			cls.Attacks.FlagIP(ip, reason)
 		}
 	}
-	rowsMoved, err = store.PromoteFlaggedIPs(ctx, all)
+	rowsMoved, err = store.PromoteFlaggedIPs(ctx, all, prog)
 	return len(all), rowsMoved, err
 }

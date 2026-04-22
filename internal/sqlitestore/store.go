@@ -15,6 +15,7 @@ import (
 	"github.com/augustoroman/caddylogs/internal/backend"
 	"github.com/augustoroman/caddylogs/internal/classify"
 	"github.com/augustoroman/caddylogs/internal/parser"
+	"github.com/augustoroman/caddylogs/internal/progress"
 
 	_ "modernc.org/sqlite"
 )
@@ -116,18 +117,71 @@ func (s *Store) GetMeta(ctx context.Context, key string) (string, error) {
 	return v, err
 }
 
-// MarkIngestComplete builds secondary indices and flips the ingest_complete
-// meta flag.
-func (s *Store) MarkIngestComplete(ctx context.Context) error {
-	for _, stmt := range indexStatements {
+// BuildPreIngestIndexes creates the indexes needed for PromoteFlaggedIPs
+// to be fast (ip column only). Safe to call at any time; uses IF NOT EXISTS.
+func (s *Store) BuildPreIngestIndexes(ctx context.Context, p progress.Func) error {
+	if p == nil {
+		p = progress.Nop
+	}
+	total := int64(len(preIngestIndexes))
+	for i, stmt := range preIngestIndexes {
+		p("index", stmtName(stmt), int64(i), total)
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
 	}
+	p("index", "pre-ingest done", total, total)
+	return nil
+}
+
+// MarkIngestComplete builds the remaining secondary indices, ANALYZEs, and
+// flips the ingest_complete meta flag. Assumes BuildPreIngestIndexes has
+// already run (safe either way: indexes use IF NOT EXISTS).
+func (s *Store) MarkIngestComplete(ctx context.Context, p progress.Func) error {
+	if p == nil {
+		p = progress.Nop
+	}
+	total := int64(len(preIngestIndexes) + len(postIngestIndexes))
+	i := int64(0)
+	for _, stmt := range preIngestIndexes {
+		p("index", stmtName(stmt), i, total)
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+		i++
+	}
+	for _, stmt := range postIngestIndexes {
+		p("index", stmtName(stmt), i, total)
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+		i++
+	}
+	p("analyze", "running ANALYZE", -1, -1)
 	if _, err := s.db.ExecContext(ctx, `ANALYZE`); err != nil {
 		return err
 	}
+	p("index", "done", total, total)
 	return s.SetMeta(ctx, "ingest_complete", "1")
+}
+
+// stmtName extracts the index name from a CREATE INDEX statement for use
+// in progress messages. Returns the trimmed statement if extraction fails.
+func stmtName(stmt string) string {
+	const marker = "idx_"
+	i := strings.Index(stmt, marker)
+	if i < 0 {
+		return stmt
+	}
+	j := i
+	for j < len(stmt) && (isIdentChar(stmt[j])) {
+		j++
+	}
+	return stmt[i:j]
+}
+
+func isIdentChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
 
 // Ingest writes a batch of events, classifying and routing each row to the

@@ -42,13 +42,13 @@ func TestEndToEndWithSampleLog(t *testing.T) {
 	}
 	t.Logf("ingested %d events", n)
 
-	ips, moved, err := ingest.FinalizeAttacks(ctx, store, cls, sqlitestore.DefaultThresholds)
+	ips, moved, err := ingest.FinalizeAttacks(ctx, store, cls, sqlitestore.DefaultThresholds, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("flagged %d attacker IPs, relocated %d rows", ips, moved)
 
-	if err := store.MarkIngestComplete(ctx); err != nil {
+	if err := store.MarkIngestComplete(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 

@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/augustoroman/caddylogs/internal/backend"
 	"github.com/augustoroman/caddylogs/internal/classify"
 	"github.com/augustoroman/caddylogs/internal/ingest"
+	"github.com/augustoroman/caddylogs/internal/progress"
 	"github.com/augustoroman/caddylogs/internal/sqlitestore"
 )
 
@@ -161,9 +163,6 @@ func openStore(ctx context.Context, c commonFlags, cls *classify.Classifier, pat
 func initialIngest(ctx context.Context, store *sqlitestore.Store, cls *classify.Classifier, paths []string, cacheHit bool, c commonFlags) error {
 	if cacheHit {
 		fmt.Fprintln(os.Stderr, "caddylogs: using cached ingest")
-		// When a cache is reused, reseed the classifier's flagged-IP set from
-		// the stored rows so live tail continues to route those IPs to the
-		// malicious table without waiting for another URI match.
 		if cls.Attacks != nil {
 			if err := reseedAttackersFromStore(ctx, store, cls); err != nil {
 				return err
@@ -172,26 +171,91 @@ func initialIngest(ctx context.Context, store *sqlitestore.Store, cls *classify.
 		return nil
 	}
 	fmt.Fprintf(os.Stderr, "caddylogs: ingesting %d file(s)...\n", len(paths))
-	last := ""
-	_, err := ingest.BulkFromFiles(ctx, store, paths, func(total int64, cur string, frac float64) {
-		if cur != "" && cur != last {
-			fmt.Fprintf(os.Stderr, "  %s\n", filepath.Base(cur))
-			last = cur
-		}
-		fmt.Fprintf(os.Stderr, "\r  %d events", total)
-	})
-	fmt.Fprintln(os.Stderr)
+	prog := progress.Throttle(5*time.Second, cliProgress)
+
+	start := time.Now()
+	n, err := ingest.BulkFromFiles(ctx, store, paths, prog)
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(os.Stderr, "caddylogs: ingested %s events in %s\n",
+		commaInt(n), time.Since(start).Round(100*time.Millisecond))
+
 	if !c.NoAttackDetection {
-		ips, rows, err := ingest.FinalizeAttacks(ctx, store, cls, attackThresholds(c))
+		start := time.Now()
+		ips, rows, err := ingest.FinalizeAttacks(ctx, store, cls, attackThresholds(c), prog)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "caddylogs: flagged %d attacker IPs, relocated %d rows\n", ips, rows)
+		fmt.Fprintf(os.Stderr, "caddylogs: flagged %d attacker IPs, relocated %s rows in %s\n",
+			ips, commaInt(rows), time.Since(start).Round(100*time.Millisecond))
 	}
-	return store.MarkIngestComplete(ctx)
+	start = time.Now()
+	if err := store.MarkIngestComplete(ctx, prog); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "caddylogs: indexes built in %s\n", time.Since(start).Round(100*time.Millisecond))
+	return nil
+}
+
+// cliProgress is the base (unthrottled) progress printer used by the CLI.
+// It writes a single line per phase+tick to stderr with a carriage return
+// so the line refreshes in-place when running in a terminal.
+func cliProgress(phase, detail string, done, total int64) {
+	var line string
+	switch {
+	case total > 0 && done >= 0:
+		if done > total {
+			done = total
+		}
+		pct := float64(done) / float64(total) * 100
+		line = fmt.Sprintf("[%s] %s %s/%s (%.0f%%)",
+			phase, detail, commaInt(done), commaInt(total), pct)
+	case done >= 0 && total <= 0:
+		line = fmt.Sprintf("[%s] %s %s", phase, detail, commaInt(done))
+	default:
+		line = fmt.Sprintf("[%s] %s", phase, detail)
+	}
+	// Pad + CR so the next update overwrites this one cleanly.
+	fmt.Fprintf(os.Stderr, "\r%-120s", line)
+	// If this is a terminal phase boundary (total and done equal and > 0),
+	// drop to a new line so the next phase starts on a fresh row.
+	if total > 0 && done >= total {
+		fmt.Fprintln(os.Stderr)
+	}
+}
+
+// commaInt formats an int64 with thousand separators.
+func commaInt(n int64) string {
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		if neg {
+			return "-" + s
+		}
+		return s
+	}
+	var out []byte
+	pre := len(s) % 3
+	if pre > 0 {
+		out = append(out, s[:pre]...)
+		if len(s) > pre {
+			out = append(out, ',')
+		}
+	}
+	for i := pre; i < len(s); i += 3 {
+		out = append(out, s[i:i+3]...)
+		if i+3 < len(s) {
+			out = append(out, ',')
+		}
+	}
+	if neg {
+		return "-" + string(out)
+	}
+	return string(out)
 }
 
 // reseedAttackersFromStore reads the distinct (ip, malicious_reason) pairs

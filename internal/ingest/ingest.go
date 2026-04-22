@@ -4,24 +4,24 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
-	"time"
 
 	"github.com/augustoroman/caddylogs/internal/backend"
 	"github.com/augustoroman/caddylogs/internal/parser"
+	"github.com/augustoroman/caddylogs/internal/progress"
 )
 
-// Progress is a simple progress callback for initial ingestion. It is called
-// periodically during BulkFromFiles with the running total of parsed events
-// and an optional per-file completion fraction for the current file.
-type Progress func(totalEvents int64, currentFile string, fileFrac float64)
-
 // BulkFromFiles parses every file in paths (.log or .log.gz) into the store.
-// It batches writes into the store for speed and periodically reports
-// progress. On context cancellation it returns ctx.Err().
-func BulkFromFiles(ctx context.Context, store backend.Store, paths []string, progress Progress) (int64, error) {
-	// Sort by size so we roughly process smaller (older .gz) files before the
-	// big live log. Not a correctness concern, but improves perceived speed.
+// It batches writes into the store for speed and reports progress through
+// prog. On context cancellation it returns ctx.Err().
+func BulkFromFiles(ctx context.Context, store backend.Store, paths []string, prog progress.Func) (int64, error) {
+	if prog == nil {
+		prog = progress.Nop
+	}
+	// Sort by size so we roughly process smaller (older .gz) files before
+	// the big live log. Not a correctness concern, but improves perceived
+	// speed.
 	sorted := append([]string(nil), paths...)
 	sort.Strings(sorted)
 
@@ -39,18 +39,12 @@ func BulkFromFiles(ctx context.Context, store backend.Store, paths []string, pro
 		batch = batch[:0]
 		return nil
 	}
-	lastReport := time.Now()
-	report := func(path string, frac float64) {
-		if progress != nil && time.Since(lastReport) > 200*time.Millisecond {
-			progress(total+int64(len(batch)), path, frac)
-			lastReport = time.Now()
-		}
-	}
 
 	for _, p := range sorted {
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}
+		prog("ingest", filepath.Base(p), total, -1)
 		ch, err := parser.ReadFile(ctx, p)
 		if err != nil {
 			return total, fmt.Errorf("open %s: %w", p, err)
@@ -68,16 +62,14 @@ func BulkFromFiles(ctx context.Context, store backend.Store, paths []string, pro
 				if err := flush(); err != nil {
 					return total, err
 				}
-				report(p, -1)
+				prog("ingest", filepath.Base(p), total, -1)
 			}
 		}
 		if err := flush(); err != nil {
 			return total, err
 		}
-		report(p, 1.0)
+		prog("ingest", "finished "+filepath.Base(p), total, -1)
 	}
-	if progress != nil {
-		progress(total, "", 1.0)
-	}
+	prog("ingest", "done", total, total)
 	return total, nil
 }
