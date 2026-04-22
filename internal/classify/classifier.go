@@ -92,15 +92,19 @@ func (c *Classifier) Close() error {
 	return c.Geo.Close()
 }
 
-// Classify returns the full labeling for an event. It checks in order:
-// known-bad IP set (fast path), URI attack patterns (tags and flags the IP),
-// then the orthogonal static / bot / local / geo dimensions.
+// Classify returns the full labeling for an event. Local IPs (RFC1918,
+// loopback, link-local, CGNAT) are NEVER tagged as malicious — a home
+// router's health-check probes or an internal scanner on your own LAN are
+// not the same kind of threat as public-internet scanners, and mixing
+// them in the attack view obscures real signal. Local traffic still gets
+// its own category in the dashboard breakdown so it stays visible.
 func (c *Classifier) Classify(ev parser.Event) Classified {
 	ua := ParseUA(ev.UserAgent)
 	country, city := c.Geo.Lookup(ev.RemoteIP)
+	isLocal := IsLocalIP(ev.RemoteIP)
 	isMal := false
 	reason := ""
-	if c.Attacks != nil {
+	if c.Attacks != nil && !isLocal {
 		if r, ok := c.Attacks.IPReason(ev.RemoteIP); ok {
 			isMal = true
 			reason = "ip_flag:" + r
@@ -113,7 +117,7 @@ func (c *Classifier) Classify(ev parser.Event) Classified {
 	return Classified{
 		Event:           ev,
 		IsBot:           c.Bots.IsBot(ev.UserAgent),
-		IsLocal:         IsLocalIP(ev.RemoteIP),
+		IsLocal:         isLocal,
 		IsStatic:        c.Static.IsStatic(ev.URI),
 		IsMalicious:     isMal,
 		MaliciousReason: reason,

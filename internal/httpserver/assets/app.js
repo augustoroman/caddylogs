@@ -396,6 +396,8 @@ const BREAKDOWN_CELLS = [
   { key: 'real_static',       bkey: 'real_static_bytes',       label: 'real static', cls: 'bd-real-static', view: 'static'  },
   { key: 'bot_dynamic',       bkey: 'bot_dynamic_bytes',       label: 'bot doc',     cls: 'bd-bot-doc',     view: 'dynamic' },
   { key: 'bot_static',        bkey: 'bot_static_bytes',        label: 'bot static',  cls: 'bd-bot-static',  view: 'static'  },
+  { key: 'local_dynamic',     bkey: 'local_dynamic_bytes',     label: 'local doc',   cls: 'bd-local-doc',   view: 'local'   },
+  { key: 'local_static',      bkey: 'local_static_bytes',      label: 'local static',cls: 'bd-local-static',view: 'local'   },
   { key: 'malicious_dynamic', bkey: 'malicious_dynamic_bytes', label: 'mal doc',     cls: 'bd-mal-doc',     view: 'malicious' },
   { key: 'malicious_static',  bkey: 'malicious_static_bytes',  label: 'mal static',  cls: 'bd-mal-static',  view: 'malicious' },
 ];
@@ -446,6 +448,29 @@ async function refreshBreakdown() {
   } catch (e) { console.error('classification:', e); }
 }
 
+// viewFilter returns the server-side filter to attach for a given view.
+// For "local" we flip the is_local default from exclude→include so the
+// local view actually shows local traffic.
+function viewFilter(base, view) {
+  const f = deepCopyFilter(base || state.filter);
+  if (view === 'local') {
+    f.include = f.include || {};
+    if (!(f.include.is_local || []).includes('true')) {
+      f.include.is_local = [...(f.include.is_local || []), 'true'];
+    }
+  }
+  return f;
+}
+// viewTable picks which SQL table the dashboard should query. Local lives
+// inside the dynamic table (with is_local=1), so Local view reuses it.
+function viewTable(view) {
+  switch (view) {
+    case 'static':    return 'static';
+    case 'malicious': return 'malicious';
+    default:          return 'dynamic';
+  }
+}
+
 // --- main refresh cycle ---
 let inflight = null;
 async function refreshAll() {
@@ -453,8 +478,9 @@ async function refreshAll() {
   if (inflight) inflight.abort();
   const ac = new AbortController();
   inflight = ac;
-  const table = state.view;
-  const body = { filter: state.filter, topn: state.topN, table: table };
+  const table = viewTable(state.view);
+  const effectiveFilter = viewFilter(state.filter, state.view);
+  const body = { filter: effectiveFilter, topn: state.topN, table };
   refreshBreakdown();
   try {
     const url = table === 'static' ? '/api/static' : '/api/dashboard';
@@ -474,13 +500,13 @@ async function refreshAll() {
   // Refresh rows.
   state.rowsOffset = 0;
   try {
-    const rowsResp = await postJSON('/api/rows', { filter: state.filter, table });
+    const rowsResp = await postJSON('/api/rows', { filter: effectiveFilter, table });
     renderRows(rowsResp.rows || [], false);
   } catch (e) { console.error('rows:', e); }
 }
 
 function setView(v) {
-  if (!['dynamic', 'static', 'malicious'].includes(v)) return;
+  if (!['dynamic', 'static', 'local', 'malicious'].includes(v)) return;
   state.view = v;
   document.querySelectorAll('.view-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.view === v);
@@ -494,7 +520,7 @@ async function loadMoreRows() {
   try {
     const r = await fetch('/api/rows?offset=' + state.rowsOffset, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter: state.filter, table: state.view }),
+      body: JSON.stringify({ filter: viewFilter(state.filter, state.view), table: viewTable(state.view) }),
     });
     const data = await r.json();
     renderRows(data.rows || [], true);

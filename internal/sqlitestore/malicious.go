@@ -33,10 +33,13 @@ func (s *Store) ComputeBehavioralAttackers(ctx context.Context, t AttackerThresh
 	out := map[string]string{}
 
 	// Rule A: any IP with >= MinAttackHits rows already in requests_malicious.
+	// Exclude local IPs defensively — the classifier already refuses to
+	// flag them, but a cached DB from an older build might contain some.
 	if t.MinAttackHits > 0 {
 		p("behavioral", "rule A: IPs with repeated attack URIs", -1, -1)
 		rows, err := s.db.QueryContext(ctx, `
             SELECT ip, COUNT(*) FROM requests_malicious
+            WHERE is_local = 0
             GROUP BY ip HAVING COUNT(*) >= ?`, t.MinAttackHits)
 		if err != nil {
 			return nil, err
@@ -54,7 +57,9 @@ func (s *Store) ComputeBehavioralAttackers(ctx context.Context, t AttackerThresh
 	}
 
 	// Rule B: high 4xx rate across the whole union. We do this per table and
-	// merge, because one IP could be split between tables.
+	// merge, because one IP could be split between tables. Local IPs are
+	// excluded — a router doing health-check probes shouldn't be tagged as
+	// an attacker.
 	if t.MinHits > 0 {
 		p("behavioral", "rule B: IPs with high 4xx rate", -1, -1)
 		// Aggregate hits + 4xx count per IP across dynamic + static + malicious.
@@ -62,13 +67,13 @@ func (s *Store) ComputeBehavioralAttackers(ctx context.Context, t AttackerThresh
             SELECT ip, SUM(hits), SUM(err)
             FROM (
               SELECT ip, 1 AS hits, CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END AS err
-                FROM requests_dynamic
+                FROM requests_dynamic  WHERE is_local = 0
               UNION ALL
               SELECT ip, 1, CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END
-                FROM requests_static
+                FROM requests_static   WHERE is_local = 0
               UNION ALL
               SELECT ip, 1, CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END
-                FROM requests_malicious
+                FROM requests_malicious WHERE is_local = 0
             )
             GROUP BY ip
             HAVING SUM(hits) >= ? AND (SUM(err) * 1.0 / SUM(hits)) >= ?`
@@ -192,10 +197,15 @@ func (s *Store) PromoteFlaggedIPs(ctx context.Context, ips map[string]string, p 
 	return total, tx.Commit()
 }
 
-// ClassificationCounts returns the six-cell breakdown used by the dashboard
-// header strip: hits and bytes in {real, bot, malicious} × {static, dynamic}.
-// "real" means is_bot=0; "bot" means is_bot=1; "malicious" is everything
-// in requests_malicious regardless of bot flag.
+// ClassificationCounts returns the eight-cell breakdown used by the
+// dashboard header strip: hits and bytes in
+// {real, bot, local, malicious} × {static, dynamic}.
+//
+//   - real      = is_local=0 AND is_bot=0 (public human-ish traffic)
+//   - bot       = is_local=0 AND is_bot=1 (public crawler traffic)
+//   - local     = is_local=1              (RFC1918 / loopback / link-local;
+//                                          never routed to the malicious table)
+//   - malicious = any row in requests_malicious (always is_local=0 by design)
 type ClassificationCounts struct {
 	RealStatic           int64 `json:"real_static"`
 	RealStaticBytes      int64 `json:"real_static_bytes"`
@@ -205,6 +215,10 @@ type ClassificationCounts struct {
 	BotStaticBytes       int64 `json:"bot_static_bytes"`
 	BotDynamic           int64 `json:"bot_dynamic"`
 	BotDynamicBytes      int64 `json:"bot_dynamic_bytes"`
+	LocalStatic          int64 `json:"local_static"`
+	LocalStaticBytes     int64 `json:"local_static_bytes"`
+	LocalDynamic         int64 `json:"local_dynamic"`
+	LocalDynamicBytes    int64 `json:"local_dynamic_bytes"`
 	MaliciousStatic      int64 `json:"malicious_static"`
 	MaliciousStaticBytes int64 `json:"malicious_static_bytes"`
 	MaliciousDoc         int64 `json:"malicious_dynamic"`
@@ -212,9 +226,9 @@ type ClassificationCounts struct {
 	FlaggedIPs           int64 `json:"flagged_ips"`
 }
 
-// Classification fans out six COUNT/SUM queries. Uses the supplied filter's
-// time range only (per-dim filters are meaningful to the individual panels,
-// not the whole-traffic breakdown).
+// Classification fans out COUNT/SUM queries for each cell. Uses only the
+// supplied filter's time range (per-dim filters are meaningful to the
+// individual panels, not the whole-traffic breakdown).
 func (s *Store) Classification(ctx context.Context, timeFromNs, timeToNs int64) (*ClassificationCounts, error) {
 	tsClause, tsArgs := tsClauseFor(timeFromNs, timeToNs)
 	out := &ClassificationCounts{}
@@ -232,25 +246,35 @@ func (s *Store) Classification(ctx context.Context, timeFromNs, timeToNs int64) 
 		return s.db.QueryRowContext(ctx, q, tsArgs...).Scan(dstHits, dstBytes)
 	}
 
-	if err := run("requests_static", "is_bot=0", &out.RealStatic, &out.RealStaticBytes); err != nil {
+	// Real: public, non-bot
+	if err := run("requests_static", "is_local=0 AND is_bot=0", &out.RealStatic, &out.RealStaticBytes); err != nil {
 		return nil, err
 	}
-	if err := run("requests_dynamic", "is_bot=0", &out.RealDynamic, &out.RealDynamicBytes); err != nil {
+	if err := run("requests_dynamic", "is_local=0 AND is_bot=0", &out.RealDynamic, &out.RealDynamicBytes); err != nil {
 		return nil, err
 	}
-	if err := run("requests_static", "is_bot=1", &out.BotStatic, &out.BotStaticBytes); err != nil {
+	// Bot: public, bot-UA
+	if err := run("requests_static", "is_local=0 AND is_bot=1", &out.BotStatic, &out.BotStaticBytes); err != nil {
 		return nil, err
 	}
-	if err := run("requests_dynamic", "is_bot=1", &out.BotDynamic, &out.BotDynamicBytes); err != nil {
+	if err := run("requests_dynamic", "is_local=0 AND is_bot=1", &out.BotDynamic, &out.BotDynamicBytes); err != nil {
 		return nil, err
 	}
+	// Local: RFC1918 / loopback / link-local. Grouped regardless of bot flag.
+	if err := run("requests_static", "is_local=1", &out.LocalStatic, &out.LocalStaticBytes); err != nil {
+		return nil, err
+	}
+	if err := run("requests_dynamic", "is_local=1", &out.LocalDynamic, &out.LocalDynamicBytes); err != nil {
+		return nil, err
+	}
+	// Malicious: never local, but split by static vs dynamic content.
 	if err := run("requests_malicious", "is_static=1", &out.MaliciousStatic, &out.MaliciousStaticBytes); err != nil {
 		return nil, err
 	}
 	if err := run("requests_malicious", "is_static=0", &out.MaliciousDoc, &out.MaliciousDocBytes); err != nil {
 		return nil, err
 	}
-	// Count distinct flagged IPs.
+	// Count distinct flagged attacker IPs (never local by construction).
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(DISTINCT ip) FROM requests_malicious`+tsClause, tsArgs...,
 	).Scan(&out.FlaggedIPs); err != nil {
