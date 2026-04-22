@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>caddylogs</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">caddylogs</div>
+  <div id="status" class="status"></div>
+  <div id="ingest-indicator" class="ingest hidden">re-ingesting…</div>
+</header>
+
+<section id="filter-bar">
+  <div class="chips" id="chips"></div>
+  <button id="clear-filters" class="btn btn-ghost">clear all</button>
+</section>
+
+<section id="overview" class="overview"></section>
+
+<section id="timeline" class="panel">
+  <div class="panel-title">Timeline (hits per bucket)</div>
+  <svg id="timeline-chart" preserveAspectRatio="none"></svg>
+  <div class="timeline-brush hint">drag on the chart to filter by time range</div>
+</section>
+
+<section id="status-class" class="panel">
+  <div class="panel-title">Status</div>
+  <div id="status-class-bars" class="status-bars"></div>
+</section>
+
+<section id="panels"></section>
+
+<section id="static-section" class="panel hidden">
+  <div class="panel-title">Static assets</div>
+  <button id="load-static" class="btn">Load static asset stats</button>
+  <div id="static-panels"></div>
+</section>
+
+<section id="rows-section" class="panel">
+  <div class="panel-title">Recent requests <span id="rows-count" class="muted"></span></div>
+  <table id="rows-table">
+    <thead><tr>
+      <th>time</th><th>status</th><th>method</th><th>host</th><th>uri</th><th>ip</th><th>country</th><th>ua</th><th class="right">ms</th>
+    </tr></thead>
+    <tbody id="rows-body"></tbody>
+  </table>
+  <div class="pager"><button id="rows-more" class="btn">Load more</button></div>
+</section>
+
+<div id="live-flash" class="live-flash hidden">live</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
