@@ -1,0 +1,28 @@
+# Binaries
+/caddylogs
+/bin/
+*.exe
+
+# Go build cache / test artifacts
+*.test
+*.out
+/coverage/
+
+# Local data that should not be redistributed
+*.mmdb
+*.log
+*.log.gz
+*.access.log*
+
+# Ephemeral output
+/tmp/
+/.cache/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
