@@ -130,8 +130,8 @@ func (s *Store) MarkIngestComplete(ctx context.Context) error {
 	return s.SetMeta(ctx, "ingest_complete", "1")
 }
 
-// Ingest writes a batch of events, classifying and splitting dynamic vs
-// static on the way in.
+// Ingest writes a batch of events, classifying and routing each row to the
+// dynamic, static, or malicious table.
 func (s *Store) Ingest(ctx context.Context, events []parser.Event) error {
 	if len(events) == 0 {
 		return nil
@@ -151,14 +151,22 @@ func (s *Store) Ingest(ctx context.Context, events []parser.Event) error {
 		return err
 	}
 	defer stmtStatic.Close()
+	stmtMal, err := tx.PrepareContext(ctx, insertSQL("requests_malicious"))
+	if err != nil {
+		return err
+	}
+	defer stmtMal.Close()
 
 	for _, ev := range events {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		c := s.cls.Classify(ev)
-		target := stmtDyn
-		if c.IsStatic {
+		var target = stmtDyn
+		switch {
+		case c.IsMalicious:
+			target = stmtMal
+		case c.IsStatic:
 			target = stmtStatic
 		}
 		args := rowArgs(c)
@@ -190,6 +198,8 @@ func rowArgs(c classify.Classified) []any {
 		c.Proto,
 		boolToInt(c.IsBot),
 		boolToInt(c.IsLocal),
+		boolToInt(c.IsStatic),
+		c.MaliciousReason,
 		c.UserAgent,
 		c.Referer,
 		int64(visitorHash(c.RemoteIP, c.UserAgent, c.Timestamp.Format("2006-01-02"))),
@@ -268,6 +278,10 @@ func dimColumn(d backend.Dimension) string {
 		return "is_bot"
 	case backend.DimIsLocal:
 		return "is_local"
+	case backend.DimIsStatic:
+		return "is_static"
+	case backend.DimMalReason:
+		return "malicious_reason"
 	}
 	return ""
 }
@@ -279,6 +293,8 @@ func tableName(t backend.Table) (string, error) {
 		return "requests_dynamic", nil
 	case backend.TableStatic:
 		return "requests_static", nil
+	case backend.TableMalicious:
+		return "requests_malicious", nil
 	}
 	return "", fmt.Errorf("unknown table %q", t)
 }

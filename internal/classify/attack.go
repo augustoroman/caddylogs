@@ -168,3 +168,14 @@ func (m *AttackMatcher) FlaggedIPCount() int {
 	defer m.mu.RUnlock()
 	return len(m.flaggedIPs)
 }
+
+// FlaggedIPs returns a copy of the flagged-IP set.
+func (m *AttackMatcher) FlaggedIPs() map[string]string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]string, len(m.flaggedIPs))
+	for ip, r := range m.flaggedIPs {
+		out[ip] = r
+	}
+	return out
+}

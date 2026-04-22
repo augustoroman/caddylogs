@@ -26,7 +26,7 @@ func runReport(ctx context.Context, opts *reportFlags) error {
 	}
 	defer store.Close()
 
-	if err := initialIngest(ctx, store, paths, cached); err != nil {
+	if err := initialIngest(ctx, store, cls, paths, cached, opts.commonFlags); err != nil {
 		return err
 	}
 

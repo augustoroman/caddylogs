@@ -6,15 +6,21 @@ import (
 
 // commonFlags captures flags used by both serve and report.
 type commonFlags struct {
-	Paths        []string
-	GeoIPPath    string
-	CacheDir     string
-	NoCache      bool
-	BotList      string
-	BotPatterns  []string
-	StaticExts   []string
-	IncludeLocal bool
-	IncludeBots  bool
+	Paths             []string
+	GeoIPPath         string
+	CacheDir          string
+	NoCache           bool
+	BotList           string
+	BotPatterns       []string
+	StaticExts        []string
+	IncludeLocal      bool
+	IncludeBots       bool
+	AttackList        string
+	AttackPatterns    []string
+	NoAttackDetection bool
+	AttackMinHits     int
+	AttackErrRate     float64
+	AttackMinURIHits  int
 }
 
 // serveFlags extends commonFlags with server-specific options.
@@ -50,6 +56,18 @@ func bindCommon(cmd *kingpin.CmdClause, c *commonFlags) {
 		BoolVar(&c.IncludeLocal)
 	cmd.Flag("include-bots", "Do not auto-exclude requests whose UA matches a bot pattern.").
 		BoolVar(&c.IncludeBots)
+	cmd.Flag("attack-list", "Replace the embedded attack-URI pattern list with a file.").
+		StringVar(&c.AttackList)
+	cmd.Flag("attack-pattern", "Additional attack-URI pattern (substring, or re:<regex>). Repeatable.").
+		StringsVar(&c.AttackPatterns)
+	cmd.Flag("no-attack-detection", "Disable URI-pattern and behavioral attack detection entirely.").
+		BoolVar(&c.NoAttackDetection)
+	cmd.Flag("attack-min-hits", "Behavioral threshold: ignore IPs with fewer than N total requests.").
+		Default("15").IntVar(&c.AttackMinHits)
+	cmd.Flag("attack-err-rate", "Behavioral threshold: fraction of 4xx responses (0..1) required to flag an IP.").
+		Default("0.70").Float64Var(&c.AttackErrRate)
+	cmd.Flag("attack-min-uri-hits", "Behavioral threshold: IPs with at least N attack-URI hits are flagged.").
+		Default("2").IntVar(&c.AttackMinURIHits)
 }
 
 func bindServeFlags(cmd *kingpin.CmdClause) *serveFlags {

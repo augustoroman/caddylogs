@@ -59,6 +59,9 @@ func buildClassifier(c commonFlags) (*classify.Classifier, error) {
 		StaticExtensions: c.StaticExts,
 		GeoIPPath:        maybeGeoIP(c.GeoIPPath),
 		ExtraBotPatterns: c.BotPatterns,
+		AttackPatterns:   c.AttackPatterns,
+		AttackListPath:   c.AttackList,
+		DisableAttacks:   c.NoAttackDetection,
 	}
 	cls, err := classify.New(opts)
 	if err != nil {
@@ -74,6 +77,16 @@ func buildClassifier(c commonFlags) (*classify.Classifier, error) {
 		cls.Bots = classify.NewBotDetector(extra, true)
 	}
 	return cls, nil
+}
+
+// attackThresholds extracts the behavioral detection thresholds from the
+// flag set.
+func attackThresholds(c commonFlags) sqlitestore.AttackerThresholds {
+	return sqlitestore.AttackerThresholds{
+		MinHits:       c.AttackMinHits,
+		MinErrorRate:  c.AttackErrRate,
+		MinAttackHits: c.AttackMinURIHits,
+	}
 }
 
 // maybeGeoIP returns the path only if the file exists; otherwise empty so
@@ -143,10 +156,19 @@ func openStore(ctx context.Context, c commonFlags, cls *classify.Classifier, pat
 }
 
 // initialIngest runs a progress-reported bulk ingest into store unless it's
-// already complete.
-func initialIngest(ctx context.Context, store *sqlitestore.Store, paths []string, cacheHit bool) error {
+// already complete. After ingest it runs the attack-flagging finalization
+// pass so the malicious table is ready by the time the dashboard comes up.
+func initialIngest(ctx context.Context, store *sqlitestore.Store, cls *classify.Classifier, paths []string, cacheHit bool, c commonFlags) error {
 	if cacheHit {
 		fmt.Fprintln(os.Stderr, "caddylogs: using cached ingest")
+		// When a cache is reused, reseed the classifier's flagged-IP set from
+		// the stored rows so live tail continues to route those IPs to the
+		// malicious table without waiting for another URI match.
+		if cls.Attacks != nil {
+			if err := reseedAttackersFromStore(ctx, store, cls); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	fmt.Fprintf(os.Stderr, "caddylogs: ingesting %d file(s)...\n", len(paths))
@@ -162,7 +184,23 @@ func initialIngest(ctx context.Context, store *sqlitestore.Store, paths []string
 	if err != nil {
 		return err
 	}
+	if !c.NoAttackDetection {
+		ips, rows, err := ingest.FinalizeAttacks(ctx, store, cls, attackThresholds(c))
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "caddylogs: flagged %d attacker IPs, relocated %d rows\n", ips, rows)
+	}
 	return store.MarkIngestComplete(ctx)
+}
+
+// reseedAttackersFromStore reads the distinct (ip, malicious_reason) pairs
+// out of the cached malicious table and pushes them into the classifier so
+// the in-memory flagged-IP set is consistent with what's on disk.
+func reseedAttackersFromStore(ctx context.Context, store *sqlitestore.Store, cls *classify.Classifier) error {
+	return store.WithIPs(ctx, func(ip, reason string) {
+		cls.Attacks.FlagIP(ip, reason)
+	})
 }
 
 // applyDefaultFilters adds is_bot=false / is_local=false exclusions unless

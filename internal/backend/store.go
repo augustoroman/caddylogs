@@ -37,7 +37,7 @@ type Store interface {
 var AllowedDimensions = []Dimension{
 	DimIP, DimHost, DimURI, DimStatus, DimStatusClass, DimMethod,
 	DimReferrer, DimBrowser, DimOS, DimDevice, DimCountry, DimCity, DimProto,
-	DimIsBot, DimIsLocal,
+	DimIsBot, DimIsLocal, DimIsStatic, DimMalReason,
 }
 
 // DimensionValid reports whether d is in AllowedDimensions.

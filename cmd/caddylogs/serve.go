@@ -29,13 +29,18 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 	}
 	defer store.Close()
 
-	if err := initialIngest(ctx, store, paths, cached); err != nil {
+	if err := initialIngest(ctx, store, cls, paths, cached, opts.commonFlags); err != nil {
 		return err
 	}
 
 	server := httpserver.New(store, httpserver.Assets(), httpserver.DefaultFilter{
 		ExcludeBots:  !opts.IncludeBots,
 		ExcludeLocal: !opts.IncludeLocal,
+	})
+	// Wire the SQLite-specific classification breakdown through the server's
+	// optional classification hook.
+	server.SetClassificationFn(func(ctx context.Context, fromNs, toNs int64) (any, error) {
+		return store.Classification(ctx, fromNs, toNs)
 	})
 
 	// Live tail on a separate goroutine. Cancellation via ctx.

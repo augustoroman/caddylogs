@@ -53,7 +53,7 @@ func RenderReport(ctx context.Context, store backend.Store, defaults DefaultFilt
 	}
 
 	// Reuse the server's parallel fanout to gather every panel.
-	srv := &Server{store: store}
+	srv := &Server{store: store, defaults: defaults}
 	dyn, err := srv.runDashboard(ctx, DashboardRequest{
 		Filter: f, Table: backend.TableDynamic, TopN: topN,
 	}, dashboardPanels)

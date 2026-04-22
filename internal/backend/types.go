@@ -23,8 +23,10 @@ const (
 	DimCountry     Dimension = "country"
 	DimCity        Dimension = "city"
 	DimProto       Dimension = "proto"
-	DimIsBot       Dimension = "is_bot"   // value "true"/"false"
-	DimIsLocal     Dimension = "is_local" // value "true"/"false"
+	DimIsBot       Dimension = "is_bot"    // value "true"/"false"
+	DimIsLocal     Dimension = "is_local"  // value "true"/"false"
+	DimIsStatic    Dimension = "is_static" // value "true"/"false"
+	DimMalReason   Dimension = "malicious_reason"
 )
 
 // Filter expresses the active drill-down state. Include[d] values are OR'd
@@ -41,8 +43,9 @@ type Filter struct {
 type Table string
 
 const (
-	TableDynamic Table = "dynamic"
-	TableStatic  Table = "static"
+	TableDynamic   Table = "dynamic"
+	TableStatic    Table = "static"
+	TableMalicious Table = "malicious"
 )
 
 // QueryKind discriminates the shape of the response.
@@ -129,9 +132,11 @@ type EventRow struct {
 	Device    string        `json:"device,omitempty"`
 	Duration  time.Duration `json:"duration"`
 	Size      int64         `json:"size"`
-	UserAgent string        `json:"user_agent,omitempty"`
-	Referer   string        `json:"referer,omitempty"`
-	Proto     string        `json:"proto,omitempty"`
-	IsBot     bool          `json:"is_bot,omitempty"`
-	IsLocal   bool          `json:"is_local,omitempty"`
+	UserAgent       string        `json:"user_agent,omitempty"`
+	Referer         string        `json:"referer,omitempty"`
+	Proto           string        `json:"proto,omitempty"`
+	IsBot           bool          `json:"is_bot,omitempty"`
+	IsLocal         bool          `json:"is_local,omitempty"`
+	IsStatic        bool          `json:"is_static,omitempty"`
+	MaliciousReason string        `json:"malicious_reason,omitempty"`
 }

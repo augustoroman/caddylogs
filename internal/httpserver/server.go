@@ -24,12 +24,24 @@ type DefaultFilter struct {
 
 // Server owns the routes, the backend Store, and the live-tail broadcast hub.
 type Server struct {
-	store     backend.Store
-	defaults  DefaultFilter
-	hub       *hub
-	assets    fs.FS
-	ingestMu  sync.RWMutex
-	ingestBusy bool
+	store            backend.Store
+	defaults         DefaultFilter
+	hub              *hub
+	assets           fs.FS
+	ingestMu         sync.RWMutex
+	ingestBusy       bool
+	classificationFn ClassificationFunc // optional; when set, /api/classification is available
+}
+
+// ClassificationFunc computes the 6-cell breakdown for the header strip.
+// It is passed explicitly because the backend.Store interface does not
+// expose it (it's SQLite-specific today).
+type ClassificationFunc func(ctx context.Context, fromNs, toNs int64) (any, error)
+
+// SetClassificationFn registers the function used by /api/classification.
+// Passing nil disables the endpoint.
+func (s *Server) SetClassificationFn(fn ClassificationFunc) {
+	s.classificationFn = fn
 }
 
 // New builds a Server. assets is the filesystem of UI assets; pass the
@@ -52,6 +64,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/rows", s.handleRows)
 	mux.HandleFunc("/api/dimensions", s.handleDimensions)
 	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/classification", s.handleClassification)
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.Handle("/", http.FileServer(http.FS(s.assets)))
 	return mux
@@ -118,7 +131,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.applyDefaults(&q.Filter)
+	s.applyDefaults(&q.Filter, q.Table)
 	res, err := s.store.Query(r.Context(), q)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
@@ -130,6 +143,36 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 // handleDimensions returns the list of queryable dimensions.
 func (s *Server) handleDimensions(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, backend.AllowedDimensions)
+}
+
+// handleClassification returns the real/bot/malicious × static/dynamic
+// breakdown for the current time-range filter (other dimensions are ignored
+// — this panel summarizes the whole traffic mix).
+func (s *Server) handleClassification(w http.ResponseWriter, r *http.Request) {
+	if s.classificationFn == nil {
+		s.writeError(w, http.StatusNotFound, "classification endpoint not configured")
+		return
+	}
+	var req DashboardRequest
+	if r.Method == http.MethodPost && r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	var fromNs, toNs int64
+	if !req.Filter.TimeFrom.IsZero() {
+		fromNs = req.Filter.TimeFrom.UnixNano()
+	}
+	if !req.Filter.TimeTo.IsZero() {
+		toNs = req.Filter.TimeTo.UnixNano()
+	}
+	result, err := s.classificationFn(r.Context(), fromNs, toNs)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, result)
 }
 
 // handleStatus reports ingest status + server info.
@@ -146,7 +189,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // applyDefaults merges server-configured baseline exclusions into the
 // client's filter without letting the client accidentally remove them.
-func (s *Server) applyDefaults(f *backend.Filter) {
+// The malicious table intentionally bypasses these defaults because
+// "hide bots" would hide nearly all of its rows and defeat the point of
+// the view.
+func (s *Server) applyDefaults(f *backend.Filter, table backend.Table) {
+	if table == backend.TableMalicious {
+		return
+	}
 	if f.Exclude == nil {
 		f.Exclude = map[backend.Dimension][]string{}
 	}

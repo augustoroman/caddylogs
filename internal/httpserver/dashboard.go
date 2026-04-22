@@ -64,20 +64,41 @@ var dashboardPanels = []panelSpec{
 	{Name: "slow", GroupBy: backend.DimURI, Order: "max_dur"},
 }
 
+// maliciousPanels is the panel set used when Table == malicious. It focuses
+// on who and why (top attacker IPs, top reasons, top URIs being probed)
+// rather than the real-traffic breakdown.
+var maliciousPanels = []panelSpec{
+	{Name: "ip", GroupBy: backend.DimIP},
+	{Name: "malicious_reason", GroupBy: backend.DimMalReason},
+	{Name: "uri", GroupBy: backend.DimURI},
+	{Name: "country", GroupBy: backend.DimCountry},
+	{Name: "city", GroupBy: backend.DimCity},
+	{Name: "browser", GroupBy: backend.DimBrowser},
+	{Name: "os", GroupBy: backend.DimOS},
+	{Name: "host", GroupBy: backend.DimHost},
+	{Name: "method", GroupBy: backend.DimMethod},
+	{Name: "status", GroupBy: backend.DimStatus},
+	{Name: "referer", GroupBy: backend.DimReferrer},
+}
+
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeDashboardRequest(r)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.applyDefaults(&req.Filter)
 	if req.Table == "" {
 		req.Table = backend.TableDynamic
 	}
+	s.applyDefaults(&req.Filter, req.Table)
 	if req.TopN <= 0 {
 		req.TopN = 10
 	}
-	resp, err := s.runDashboard(r.Context(), req, dashboardPanels)
+	panels := dashboardPanels
+	if req.Table == backend.TableMalicious {
+		panels = maliciousPanels
+	}
+	resp, err := s.runDashboard(r.Context(), req, panels)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -94,8 +115,8 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.applyDefaults(&req.Filter)
 	req.Table = backend.TableStatic
+	s.applyDefaults(&req.Filter, req.Table)
 	if req.TopN <= 0 {
 		req.TopN = 10
 	}
@@ -120,10 +141,10 @@ func (s *Server) handleRows(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.applyDefaults(&req.Filter)
 	if req.Table == "" {
 		req.Table = backend.TableDynamic
 	}
+	s.applyDefaults(&req.Filter, req.Table)
 	q := backend.Query{
 		Table: req.Table, Kind: backend.KindRows,
 		Filter: req.Filter, Limit: 50, OrderBy: "ts desc",

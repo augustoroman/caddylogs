@@ -88,7 +88,7 @@ func buildWhere(f backend.Filter) (string, []any, error) {
 // dimensions store 0/1 ints.
 func mapFilterValue(dim backend.Dimension, v string) any {
 	switch dim {
-	case backend.DimIsBot, backend.DimIsLocal:
+	case backend.DimIsBot, backend.DimIsLocal, backend.DimIsStatic:
 		if v == "true" || v == "1" {
 			return 1
 		}
@@ -293,7 +293,8 @@ func (s *Store) queryRows(ctx context.Context, table, where string, args []any, 
 	}
 	sqlStr := fmt.Sprintf(
 		`SELECT ts, status, method, host, uri, ip, country, city, browser, os, device,
-                duration_ns, size, user_agent, referer, proto, is_bot, is_local
+                duration_ns, size, user_agent, referer, proto,
+                is_bot, is_local, is_static, malicious_reason
          FROM %s%s
          ORDER BY %s
          LIMIT ? OFFSET ?`,
@@ -309,12 +310,12 @@ func (s *Store) queryRows(ctx context.Context, table, where string, args []any, 
 	for rows.Next() {
 		var r backend.EventRow
 		var tsNs, durNs int64
-		var isBot, isLocal int
+		var isBot, isLocal, isStatic int
 		if err := rows.Scan(
 			&tsNs, &r.Status, &r.Method, &r.Host, &r.URI, &r.IP,
 			&r.Country, &r.City, &r.Browser, &r.OS, &r.Device,
 			&durNs, &r.Size, &r.UserAgent, &r.Referer, &r.Proto,
-			&isBot, &isLocal,
+			&isBot, &isLocal, &isStatic, &r.MaliciousReason,
 		); err != nil {
 			return nil, err
 		}
@@ -322,6 +323,7 @@ func (s *Store) queryRows(ctx context.Context, table, where string, args []any, 
 		r.Duration = time.Duration(durNs)
 		r.IsBot = isBot != 0
 		r.IsLocal = isLocal != 0
+		r.IsStatic = isStatic != 0
 		out = append(out, r)
 	}
 	return &backend.Result{Kind: backend.KindRows, Rows: out}, rows.Err()
