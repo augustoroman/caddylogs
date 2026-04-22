@@ -39,8 +39,9 @@ func NewRunner(store *sqlitestore.Store, tags *classify.ManualTagSet) *Runner {
 // set the same classifier last produced. Semantics:
 //
 //   - If an IP appears in the classifier's new output AND has no tag
-//     from this classifier yet AND is not manually overridden, it is
-//     tagged now (both the DB rows and the JSON).
+//     from this classifier yet AND is not manually overridden AND is
+//     not already claimed by a DIFFERENT classifier, it is tagged now
+//     (both the DB rows and the JSON).
 //   - If an IP was tagged by this classifier previously but is not in
 //     the new output, the tag is removed and the IP's rows are reverted
 //     to the "real" state (is_bot/is_local flipped back, moved out of
@@ -48,6 +49,14 @@ func NewRunner(store *sqlitestore.Store, tags *classify.ManualTagSet) *Runner {
 //     classifiers only ever tag IPs that were in the real pool.
 //   - Manual tags always win: an IP the operator has tagged (Source =
 //     SourceManual) appears in Skipped and is left alone.
+//   - A classifier never steals another classifier's tags. With two
+//     rules that overlap (e.g. root-only-burst ⊂ no-static-ever), the
+//     first to tag an IP keeps it; the second sees the IP in Skipped.
+//     Classifier order in BuiltIn() effectively sets priority:
+//     specific rules register before general ones so the more
+//     informative tag wins. To transfer ownership, the operator
+//     untags manually (clears both the manual_tags row and the JSON
+//     entry) and re-runs the target classifier.
 //
 // Returning early on any store/tag error leaves partial state in place;
 // a subsequent run will re-apply the remainder.
@@ -72,16 +81,24 @@ func (r *Runner) Run(ctx context.Context, c Classifier) (*RunResult, error) {
 		newByIP[d.IP] = d
 	}
 
-	manual := r.tags.ListBySource(classify.SourceManual)
-	manualByIP := make(map[string]bool, len(manual))
-	for _, e := range manual {
-		manualByIP[e.IP] = true
+	// Partition the full tag set into "manual" (always skip) and
+	// "owned by a different classifier" (also skip) in a single pass.
+	// Tags owned by THIS classifier are tracked separately in prev.
+	ownedByOther := map[string]bool{}
+	manualByIP := map[string]bool{}
+	for _, e := range r.tags.List() {
+		switch {
+		case e.Source == classify.SourceManual:
+			manualByIP[e.IP] = true
+		case e.Source != "" && e.Source != c.Name():
+			ownedByOther[e.IP] = true
+		}
 	}
 
 	result := &RunResult{Name: c.Name()}
 
 	for ip, d := range newByIP {
-		if manualByIP[ip] {
+		if manualByIP[ip] || ownedByOther[ip] {
 			result.Skipped = append(result.Skipped, ip)
 			continue
 		}
