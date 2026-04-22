@@ -75,6 +75,12 @@ func Open(opts Options) (*Store, error) {
 	return s, nil
 }
 
+// DB returns the underlying *sql.DB for classifier implementations that
+// need to run custom SQL. Kept narrow — most callers should use Query.
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
+
 // Close implements backend.Store.
 func (s *Store) Close() error {
 	err := s.db.Close()
