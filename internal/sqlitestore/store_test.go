@@ -33,7 +33,7 @@ func TestEndToEndWithSampleLog(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	n, err := ingest.BulkFromFiles(ctx, store, paths, nil)
+	n, err := ingest.BulkFromFiles(ctx, store, paths, ingest.BulkOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}

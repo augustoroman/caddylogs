@@ -175,7 +175,25 @@ func initialIngest(ctx context.Context, store *sqlitestore.Store, cls *classify.
 	prog := progress.Throttle(5*time.Second, cliProgress)
 
 	start := time.Now()
-	n, err := ingest.BulkFromFiles(ctx, store, paths, prog)
+	n, err := ingest.BulkFromFiles(ctx, store, paths, ingest.BulkOpts{
+		Progress: prog,
+		// Print one line per file as soon as ingest touches it. Bypasses
+		// the throttle so short files don't get swallowed by the 5s
+		// window and the operator has real-time visibility into which
+		// file is currently being processed.
+		OnFile: func(path string, index, ofN int, totalSoFar int64) {
+			// Break from any in-place cliProgress line (which uses \r
+			// to overwrite itself) before printing a sticky line per
+			// file. On the first file there's nothing to break from,
+			// so skip the leading newline to avoid a blank line.
+			prefix := "\n"
+			if index == 1 {
+				prefix = ""
+			}
+			fmt.Fprintf(os.Stderr, "%scaddylogs: [%d/%d] %s (running total: %s events)\n",
+				prefix, index, ofN, path, commaInt(totalSoFar))
+		},
+	})
 	if err != nil {
 		return err
 	}
