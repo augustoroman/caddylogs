@@ -85,6 +85,7 @@ a:hover { text-decoration: underline; }
 .view-btn[data-view="malicious"].active { background: var(--err); border-color: var(--err); color: #1a0707; }
 .view-btn[data-view="static"].active    { background: var(--warn); border-color: var(--warn); color: #1a1000; }
 .view-btn[data-view="local"].active     { background: #7aa6e0; border-color: #7aa6e0; color: #0a1016; }
+.view-btn[data-view="bots"].active      { background: #c89a3a; border-color: #c89a3a; color: #1a1000; }
 
 .breakdown {
   padding: 6px 16px 10px; border-bottom: 1px solid var(--border);

@@ -6,7 +6,7 @@ const state = {
   rowsOffset: 0,
   rowsBuffer: [], // live events appended client-side between refreshes
   maxLiveRows: 200,
-  view: 'dynamic',   // "dynamic" | "static" | "local" | "malicious"
+  view: 'dynamic',   // "dynamic" | "static" | "local" | "bots" | "malicious"
   sortBy: 'hits',    // "hits" | "bytes"
 };
 
@@ -567,8 +567,8 @@ function appendRow(r) {
 const BREAKDOWN_CELLS = [
   { key: 'real_dynamic',      bkey: 'real_dynamic_bytes',      label: 'real doc',    cls: 'bd-real-doc',    view: 'dynamic' },
   { key: 'real_static',       bkey: 'real_static_bytes',       label: 'real static', cls: 'bd-real-static', view: 'static'  },
-  { key: 'bot_dynamic',       bkey: 'bot_dynamic_bytes',       label: 'bot doc',     cls: 'bd-bot-doc',     view: 'dynamic' },
-  { key: 'bot_static',        bkey: 'bot_static_bytes',        label: 'bot static',  cls: 'bd-bot-static',  view: 'static'  },
+  { key: 'bot_dynamic',       bkey: 'bot_dynamic_bytes',       label: 'bot doc',     cls: 'bd-bot-doc',     view: 'bots'    },
+  { key: 'bot_static',        bkey: 'bot_static_bytes',        label: 'bot static',  cls: 'bd-bot-static',  view: 'bots'    },
   { key: 'local_dynamic',     bkey: 'local_dynamic_bytes',     label: 'local doc',   cls: 'bd-local-doc',   view: 'local'   },
   { key: 'local_static',      bkey: 'local_static_bytes',      label: 'local static',cls: 'bd-local-static',view: 'local'   },
   { key: 'malicious_dynamic', bkey: 'malicious_dynamic_bytes', label: 'mal doc',     cls: 'bd-mal-doc',     view: 'malicious' },
@@ -622,8 +622,9 @@ async function refreshBreakdown() {
 }
 
 // viewFilter returns the server-side filter to attach for a given view.
-// For "local" we flip the is_local default from exclude→include so the
-// local view actually shows local traffic.
+// For "local" and "bots" we flip the matching default from exclude→include
+// so those views actually show the traffic they advertise (without the
+// server-side applyDefaults re-excluding them).
 function viewFilter(base, view) {
   const f = deepCopyFilter(base || state.filter);
   if (view === 'local') {
@@ -632,10 +633,17 @@ function viewFilter(base, view) {
       f.include.is_local = [...(f.include.is_local || []), 'true'];
     }
   }
+  if (view === 'bots') {
+    f.include = f.include || {};
+    if (!(f.include.is_bot || []).includes('true')) {
+      f.include.is_bot = [...(f.include.is_bot || []), 'true'];
+    }
+  }
   return f;
 }
-// viewTable picks which SQL table the dashboard should query. Local lives
-// inside the dynamic table (with is_local=1), so Local view reuses it.
+// viewTable picks which SQL table the dashboard should query. Local and
+// Bots both live inside the dynamic table (with is_local=1 / is_bot=1), so
+// they reuse it.
 function viewTable(view) {
   switch (view) {
     case 'static':    return 'static';
@@ -689,7 +697,7 @@ function setSort(s) {
 }
 
 function setView(v) {
-  if (!['dynamic', 'static', 'local', 'malicious'].includes(v)) return;
+  if (!['dynamic', 'static', 'local', 'bots', 'malicious'].includes(v)) return;
   state.view = v;
   document.querySelectorAll('.view-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.view === v);
