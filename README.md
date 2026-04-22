@@ -194,14 +194,6 @@ parameterized `Query` struct — so a non-SQLite backend (e.g. a
 stream-re-parse implementation for memory-constrained environments) can
 be swapped in without changing any callers.
 
-## Kingpin version note
-
-The original request was for `github.com/alecthomas/kingpin/v4`, which
-is not published on the Go module proxy at the time of writing (latest
-stable tag is v2.4.0; v3 and v4 branches exist in the repo but are
-untagged). This module uses `kingpin/v2` instead. Swap the import once
-a v4 tag lands if you prefer the newer API surface.
-
 ## Status
 
 Working: parser, classifier, SQLite ingest with cached reuse, panel
