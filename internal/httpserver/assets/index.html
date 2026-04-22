@@ -9,9 +9,19 @@
 <body>
 <header id="topbar">
   <div class="brand">caddylogs</div>
+  <div class="view-switch">
+    <button class="btn view-btn active" data-view="dynamic">Real</button>
+    <button class="btn view-btn" data-view="static">Static</button>
+    <button class="btn view-btn" data-view="malicious">Malicious</button>
+  </div>
   <div id="status" class="status"></div>
   <div id="ingest-indicator" class="ingest hidden">re-ingesting…</div>
 </header>
+
+<section id="breakdown" class="breakdown">
+  <div class="breakdown-bar" id="breakdown-bar"></div>
+  <div class="breakdown-legend" id="breakdown-legend"></div>
+</section>
 
 <section id="filter-bar">
   <div class="chips" id="chips"></div>
@@ -33,9 +43,10 @@
 
 <section id="panels"></section>
 
-<section id="static-section" class="panel hidden">
-  <div class="panel-title">Static assets</div>
-  <button id="load-static" class="btn">Load static asset stats</button>
+<section id="static-section" class="panel">
+  <div class="panel-title">Static assets (on-demand)</div>
+  <button id="load-static" class="btn">Load static asset stats for current filters</button>
+  <div class="hint">The Static view (above) shows the full static dashboard; this button computes the quick summary without switching views.</div>
   <div id="static-panels"></div>
 </section>
 

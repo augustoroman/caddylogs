@@ -6,6 +6,7 @@ const state = {
   rowsOffset: 0,
   rowsBuffer: [], // live events appended client-side between refreshes
   maxLiveRows: 200,
+  view: 'dynamic', // "dynamic" | "static" | "malicious"
 };
 
 // --- helpers ---
@@ -219,7 +220,7 @@ function renderTimeline(buckets) {
   });
 }
 
-const PANEL_DEFS = [
+const DYNAMIC_PANELS = [
   { name: 'ip', title: 'Top IPs', dim: 'ip' },
   { name: 'uri', title: 'Top URIs', dim: 'uri' },
   { name: 'country', title: 'Top Countries', dim: 'country' },
@@ -234,53 +235,123 @@ const PANEL_DEFS = [
   { name: 'host', title: 'Top Hosts', dim: 'host' },
   { name: 'method', title: 'Methods', dim: 'method' },
 ];
+const MALICIOUS_PANELS = [
+  { name: 'ip', title: 'Top attacker IPs', dim: 'ip' },
+  { name: 'malicious_reason', title: 'Flag reasons', dim: 'malicious_reason' },
+  { name: 'uri', title: 'Top targeted URIs', dim: 'uri' },
+  { name: 'country', title: 'Top countries', dim: 'country' },
+  { name: 'city', title: 'Top cities', dim: 'city' },
+  { name: 'browser', title: 'UAs', dim: 'browser' },
+  { name: 'os', title: 'OS', dim: 'os' },
+  { name: 'host', title: 'Targeted hosts', dim: 'host' },
+  { name: 'method', title: 'Methods', dim: 'method' },
+  { name: 'status', title: 'Response status', dim: 'status' },
+  { name: 'referer', title: 'Referrers (spoofed)', dim: 'referer' },
+];
+function currentPanelDefs() {
+  return state.view === 'malicious' ? MALICIOUS_PANELS : DYNAMIC_PANELS;
+}
 
 function renderPanels(panels) {
   const container = document.getElementById('panels');
   container.innerHTML = '';
-  PANEL_DEFS.forEach(def => {
+  const defs = currentPanelDefs();
+  defs.forEach(def => {
     const rows = panels[def.name] || [];
     const sec = document.createElement('section');
     sec.className = 'panel';
+    const extraHeader = def.extraCol === 'max_ms' ? 4 : 3;
     let tableRows = '';
     if (rows.length === 0) {
-      tableRows = `<tr><td colspan="3" class="panel-empty">no data</td></tr>`;
+      tableRows = `<tr><td colspan="${extraHeader}" class="panel-empty">no data</td></tr>`;
     } else {
       const maxHits = Math.max(...rows.map(r => r.hits || 0)) || 1;
       tableRows = rows.map(r => {
         const barWidth = ((r.hits || 0) / maxHits) * 100;
-        const extra = def.extraCol === 'max_ms' ? `<td class="right">${fmtDuration(r.max_ms)}</td>` : '';
+        const extra = def.extraCol === 'max_ms'
+          ? `<td class="right" title="max ${fmtDuration(r.max_ms)}, avg ${fmtDuration(r.avg_ms)}">${fmtDuration(r.max_ms)}</td>`
+          : '';
         const val = r.key || '(none)';
+        const hitsTip = `${fmtInt(r.hits)} hits · ${fmtInt(r.visitors)} visitors · ${fmtBytes(r.bytes)}`;
         return `
-          <tr data-val="${escapeHTML(String(val))}" data-dim="${def.dim}">
-            <td class="key-cell" title="${escapeHTML(val)}">${escapeHTML(truncate(val, 80))}</td>
-            <td class="right">${fmtInt(r.hits)}</td>
+          <tr data-val="${escapeHTML(String(val))}" data-dim="${def.dim}" title="click to filter, shift-click to exclude">
+            <td class="key-cell" title="${escapeHTML(val)}">${escapeHTML(val)}</td>
+            <td class="right hits-cell" title="${escapeHTML(hitsTip)}">${fmtInt(r.hits)}</td>
             ${extra}
             <td class="bar-cell"><div class="bar" style="width:${barWidth.toFixed(1)}%"></div></td>
           </tr>`;
       }).join('');
     }
     const headers = def.extraCol === 'max_ms'
-      ? `<tr><th>${def.dim}</th><th class="right">hits</th><th class="right">max ms</th><th></th></tr>`
-      : `<tr><th>${def.dim}</th><th class="right">hits</th><th></th></tr>`;
+      ? `<tr><th data-col="key">${escapeHTML(def.dim)}<span class="col-resize"></span></th><th data-col="hits" class="right">hits<span class="col-resize"></span></th><th data-col="max" class="right">max ms<span class="col-resize"></span></th><th data-col="bar"></th></tr>`
+      : `<tr><th data-col="key">${escapeHTML(def.dim)}<span class="col-resize"></span></th><th data-col="hits" class="right">hits<span class="col-resize"></span></th><th data-col="bar"></th></tr>`;
     sec.innerHTML = `
       <div class="panel-title">${escapeHTML(def.title)} <span class="muted">${rows.length}</span></div>
-      <table class="panel-table">
+      <table class="panel-table" data-panel="${def.name}">
         <thead>${headers}</thead>
         <tbody>${tableRows}</tbody>
       </table>
     `;
     sec.querySelectorAll('tbody tr').forEach(tr => {
       tr.addEventListener('click', (e) => {
+        // Ignore clicks that originated in a resize handle drag.
+        if (e.target.closest('.col-resize')) return;
         const val = tr.dataset.val;
         const dim = tr.dataset.dim;
         if (!val || val === '(none)') return;
-        // Shift-click excludes instead of including.
         addFilter(dim, val, e.shiftKey);
       });
     });
     container.appendChild(sec);
+    installColumnResize(sec.querySelector('table.panel-table'));
+    restoreColumnWidths(sec.querySelector('table.panel-table'), def.name);
   });
+}
+
+// --- column resize + width persistence ---
+function installColumnResize(table) {
+  const ths = table.querySelectorAll('thead th');
+  ths.forEach((th, i) => {
+    const handle = th.querySelector('.col-resize');
+    if (!handle) return;
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = th.getBoundingClientRect().width;
+      handle.classList.add('resizing');
+      th.classList.add('resizing');
+      const onMove = (ev) => {
+        const delta = ev.clientX - startX;
+        const newW = Math.max(30, startW + delta);
+        th.style.width = newW + 'px';
+      };
+      const onUp = () => {
+        handle.classList.remove('resizing');
+        th.classList.remove('resizing');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        saveColumnWidths(table);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
+function saveColumnWidths(table) {
+  const panel = table.dataset.panel;
+  if (!panel) return;
+  const widths = [...table.querySelectorAll('thead th')].map(th => th.style.width || '');
+  try { localStorage.setItem('cl_cols_' + panel, JSON.stringify(widths)); } catch {}
+}
+function restoreColumnWidths(table, panelName) {
+  try {
+    const raw = localStorage.getItem('cl_cols_' + panelName);
+    if (!raw) return;
+    const widths = JSON.parse(raw);
+    const ths = table.querySelectorAll('thead th');
+    widths.forEach((w, i) => { if (w && ths[i]) ths[i].style.width = w; });
+  } catch {}
 }
 
 function renderRows(rows, append) {
@@ -319,6 +390,40 @@ function appendRow(r) {
   body.appendChild(tr);
 }
 
+// --- classification breakdown ---
+const BREAKDOWN_CELLS = [
+  { key: 'real_dynamic', label: 'real doc',      cls: 'bd-real-doc',     view: 'dynamic' },
+  { key: 'real_static',  label: 'real static',   cls: 'bd-real-static',  view: 'static'  },
+  { key: 'bot_dynamic',  label: 'bot doc',       cls: 'bd-bot-doc',      view: 'dynamic' },
+  { key: 'bot_static',   label: 'bot static',    cls: 'bd-bot-static',   view: 'static'  },
+  { key: 'malicious_dynamic', label: 'mal doc',    cls: 'bd-mal-doc',    view: 'malicious' },
+  { key: 'malicious_static',  label: 'mal static', cls: 'bd-mal-static', view: 'malicious' },
+];
+async function refreshBreakdown() {
+  try {
+    const r = await postJSON('/api/classification', { filter: state.filter });
+    const total = BREAKDOWN_CELLS.reduce((s, c) => s + (r[c.key] || 0), 0) || 1;
+    const bar = document.getElementById('breakdown-bar');
+    const legend = document.getElementById('breakdown-legend');
+    bar.innerHTML = BREAKDOWN_CELLS.map(c => {
+      const n = r[c.key] || 0;
+      const pct = (n / total) * 100;
+      if (n === 0) return '';
+      return `<div class="bd-seg ${c.cls}" style="flex:${n} ${n} 0" title="${c.label}: ${fmtInt(n)} (${pct.toFixed(1)}%)" data-view="${c.view}">${pct >= 6 ? c.label : ''}</div>`;
+    }).join('');
+    bar.querySelectorAll('.bd-seg').forEach(el => {
+      el.addEventListener('click', () => {
+        setView(el.dataset.view);
+      });
+    });
+    legend.innerHTML = BREAKDOWN_CELLS.map(c => {
+      const n = r[c.key] || 0;
+      const pct = (n / total) * 100;
+      return `<span class="lg"><span class="sw ${c.cls}"></span>${c.label}: ${fmtInt(n)} (${pct.toFixed(1)}%)</span>`;
+    }).join('') + `<span class="flagged">${fmtInt(r.flagged_ips || 0)} attacker IPs flagged</span>`;
+  } catch (e) { console.error('classification:', e); }
+}
+
 // --- main refresh cycle ---
 let inflight = null;
 async function refreshAll() {
@@ -326,9 +431,12 @@ async function refreshAll() {
   if (inflight) inflight.abort();
   const ac = new AbortController();
   inflight = ac;
-  const body = { filter: state.filter, topn: state.topN };
+  const table = state.view;
+  const body = { filter: state.filter, topn: state.topN, table: table };
+  refreshBreakdown();
   try {
-    const r = await fetch('/api/dashboard', {
+    const url = table === 'static' ? '/api/static' : '/api/dashboard';
+    const r = await fetch(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body), signal: ac.signal,
     });
@@ -338,16 +446,25 @@ async function refreshAll() {
     renderStatusClass(dash.status_class || {});
     renderTimeline(dash.timeline || []);
     renderPanels(dash.panels || {});
-    document.getElementById('static-section').classList.remove('hidden');
   } catch (e) {
     if (e.name !== 'AbortError') console.error('dashboard:', e);
   }
   // Refresh rows.
   state.rowsOffset = 0;
   try {
-    const rowsResp = await postJSON('/api/rows', { filter: state.filter });
+    const rowsResp = await postJSON('/api/rows', { filter: state.filter, table });
     renderRows(rowsResp.rows || [], false);
   } catch (e) { console.error('rows:', e); }
+}
+
+function setView(v) {
+  if (!['dynamic', 'static', 'malicious'].includes(v)) return;
+  state.view = v;
+  document.querySelectorAll('.view-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.view === v);
+  });
+  document.body.dataset.view = v;
+  refreshAll();
 }
 
 async function loadMoreRows() {
@@ -355,7 +472,7 @@ async function loadMoreRows() {
   try {
     const r = await fetch('/api/rows?offset=' + state.rowsOffset, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter: state.filter }),
+      body: JSON.stringify({ filter: state.filter, table: state.view }),
     });
     const data = await r.json();
     renderRows(data.rows || [], true);
@@ -467,6 +584,9 @@ document.getElementById('clear-filters').addEventListener('click', () => {
 });
 document.getElementById('load-static').addEventListener('click', loadStatic);
 document.getElementById('rows-more').addEventListener('click', loadMoreRows);
+document.querySelectorAll('.view-btn').forEach(btn => {
+  btn.addEventListener('click', () => setView(btn.dataset.view));
+});
 
 async function pollStatus() {
   try {
