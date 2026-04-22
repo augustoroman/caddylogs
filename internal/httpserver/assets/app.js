@@ -106,6 +106,13 @@ function renderChips() {
       if (bucket[dim].length === 0) delete bucket[dim];
       refreshAll();
     });
+    if (dim === 'ip' && !excl) {
+      el.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        openTagMenu(String(val), e.clientX, e.clientY);
+      });
+      el.title = 'right-click to tag';
+    }
     c.appendChild(el);
   };
   for (const [dim, vals] of Object.entries(state.filter.include || {})) {
@@ -420,7 +427,10 @@ function appendPanelRows(sec, rows) {
     const tr = document.createElement('tr');
     tr.dataset.val = r.key || '(none)';
     tr.dataset.dim = def.dim;
-    tr.setAttribute('title', 'click to filter, shift-click to exclude');
+    const tip = def.dim === 'ip'
+      ? 'click to filter, shift-click to exclude, right-click to tag'
+      : 'click to filter, shift-click to exclude';
+    tr.setAttribute('title', tip);
     const barWidth = ((prim.barOf(r) || 0) / maxPrim) * 100;
     const val = r.key || '(none)';
     // Tooltip always shows both metrics so the toggle is informational
@@ -439,6 +449,14 @@ function appendPanelRows(sec, rows) {
       if (!v || v === '(none)') return;
       addFilter(d, v, e.shiftKey);
     });
+    if (def.dim === 'ip') {
+      tr.addEventListener('contextmenu', (e) => {
+        const ip = tr.dataset.val;
+        if (!ip || ip === '(none)') return;
+        e.preventDefault();
+        openTagMenu(ip, e.clientX, e.clientY);
+      });
+    }
     tbody.appendChild(tr);
   });
 }
@@ -545,7 +563,7 @@ function appendRow(r) {
     <td>${escapeHTML(r.method || '')}</td>
     <td>${escapeHTML(truncate(r.host || '', 20))}</td>
     <td title="${escapeHTML(r.uri || '')}">${escapeHTML(truncate(r.uri || '', 60))}</td>
-    <td>${escapeHTML(r.ip || '')}</td>
+    <td class="ip-cell" title="right-click to tag">${escapeHTML(r.ip || '')}</td>
     <td>${escapeHTML(r.country || '')}</td>
     <td title="${escapeHTML(r.user_agent || '')}">${escapeHTML(truncate(ua, 30))}</td>
     <td class="right">${dur}</td>
@@ -559,6 +577,11 @@ function appendRow(r) {
     if (map[cellIdx] && map[cellIdx][1]) {
       addFilter(map[cellIdx][0], String(map[cellIdx][1]), e.shiftKey);
     }
+  });
+  tr.addEventListener('contextmenu', (e) => {
+    if (!e.target.closest('.ip-cell') || !r.ip) return;
+    e.preventDefault();
+    openTagMenu(r.ip, e.clientX, e.clientY);
   });
   body.appendChild(tr);
 }
@@ -767,6 +790,77 @@ async function loadStatic() {
   btn.disabled = false;
 }
 
+// --- manual IP tagging ---
+// A manual tag pins an IP to one of {real, local, bot, malicious}. The server
+// rewrites existing rows in the store and teaches the classifier so every
+// future live-tail event for this IP is classified the same way. Right-click
+// on an IP value (in a panel row, the raw-events list, or an IP filter chip)
+// to open the menu.
+function openTagMenu(ip, x, y) {
+  closeTagMenu();
+  const menu = document.createElement('div');
+  menu.className = 'tag-menu';
+  menu.id = 'tag-menu';
+  menu.innerHTML = `
+    <div class="tag-menu-title">Tag <span class="ip">${escapeHTML(ip)}</span> as:</div>
+    <button data-tag="real">Real</button>
+    <button data-tag="local">Local</button>
+    <button data-tag="bot">Bot</button>
+    <button data-tag="malicious">Malicious</button>
+    <button class="cancel" type="button">Cancel</button>
+  `;
+  // Clamp the menu into the viewport so right-clicking near the edge still
+  // shows the whole menu.
+  const W = 200, H = 220;
+  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - W)) + 'px';
+  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - H)) + 'px';
+  document.body.appendChild(menu);
+  menu.querySelectorAll('button[data-tag]').forEach(btn => {
+    btn.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      const tag = btn.dataset.tag;
+      closeTagMenu();
+      await applyTag(ip, tag);
+    });
+  });
+  menu.querySelector('.cancel').addEventListener('click', closeTagMenu);
+  // Defer installing the outside-click listener so the click that opened the
+  // menu doesn't immediately close it.
+  setTimeout(() => {
+    document.addEventListener('click', outsideTagClose, true);
+    document.addEventListener('keydown', escTagClose);
+  }, 0);
+}
+function outsideTagClose(e) {
+  const m = document.getElementById('tag-menu');
+  if (m && !m.contains(e.target)) closeTagMenu();
+}
+function escTagClose(e) {
+  if (e.key === 'Escape') closeTagMenu();
+}
+function closeTagMenu() {
+  const m = document.getElementById('tag-menu');
+  if (m) m.remove();
+  document.removeEventListener('click', outsideTagClose, true);
+  document.removeEventListener('keydown', escTagClose);
+}
+async function applyTag(ip, tag) {
+  try {
+    const r = await fetch('/api/tag', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip, tag }),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.error || ('HTTP ' + r.status));
+    }
+    refreshAll();
+  } catch (e) {
+    alert('Failed to tag ' + ip + ' as ' + tag + ': ' + e.message);
+  }
+}
+
 // --- live tail ---
 let liveCount = 0;
 function flashLive() {
@@ -803,11 +897,16 @@ function openWS() {
           <td>${escapeHTML(r.method || '')}</td>
           <td>${escapeHTML(truncate(r.host || '', 20))}</td>
           <td title="${escapeHTML(r.uri || '')}">${escapeHTML(truncate(r.uri || '', 60))}</td>
-          <td>${escapeHTML(r.ip || '')}</td>
+          <td class="ip-cell" title="right-click to tag">${escapeHTML(r.ip || '')}</td>
           <td>${escapeHTML(r.country || '')}</td>
           <td title="${escapeHTML(r.user_agent || '')}">${escapeHTML(truncate(ua, 30))}</td>
           <td class="right">${dur}</td>
         `;
+        tr.addEventListener('contextmenu', (e) => {
+          if (!e.target.closest('.ip-cell') || !r.ip) return;
+          e.preventDefault();
+          openTagMenu(r.ip, e.clientX, e.clientY);
+        });
         body.insertBefore(tr, body.firstChild);
         while (body.children.length > 300) body.removeChild(body.lastChild);
       }

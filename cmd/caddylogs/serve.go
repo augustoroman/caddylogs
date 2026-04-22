@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/augustoroman/caddylogs/internal/classify"
 	"github.com/augustoroman/caddylogs/internal/httpserver"
 	"github.com/augustoroman/caddylogs/internal/livetail"
 )
@@ -33,6 +34,15 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 		return err
 	}
 
+	// Seed the classifier's manual-tag set from whatever was persisted in
+	// the cached DB so the live tail routes the same IPs consistently with
+	// what the user has already tagged.
+	if err := store.WithManualTags(ctx, func(ip string, tag classify.ManualTag) {
+		cls.ManualTags.Set(ip, tag)
+	}); err != nil {
+		return err
+	}
+
 	server := httpserver.New(store, httpserver.Assets(), httpserver.DefaultFilter{
 		ExcludeBots:  !opts.IncludeBots,
 		ExcludeLocal: !opts.IncludeLocal,
@@ -41,6 +51,20 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 	// optional classification hook.
 	server.SetClassificationFn(func(ctx context.Context, fromNs, toNs int64) (any, error) {
 		return store.Classification(ctx, fromNs, toNs)
+	})
+	// Wire manual IP tagging: the HTTP handler persists the tag and updates
+	// existing rows via the store; we also update the classifier's in-memory
+	// set so live-tail events for that IP are classified consistently.
+	server.SetTagFn(func(ctx context.Context, ip, tag string) error {
+		t := classify.ManualTag(tag)
+		if !classify.ValidManualTag(t) {
+			return fmt.Errorf("invalid tag %q", tag)
+		}
+		if err := store.ApplyManualTag(ctx, ip, t); err != nil {
+			return err
+		}
+		cls.ManualTags.Set(ip, t)
+		return nil
 	})
 
 	// Live tail on a separate goroutine. Cancellation via ctx.

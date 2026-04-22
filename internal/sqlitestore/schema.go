@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS meta (
     k TEXT PRIMARY KEY,
     v TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS manual_tags (
+    ip  TEXT PRIMARY KEY,
+    tag TEXT NOT NULL,
+    at  INTEGER NOT NULL
+);
 `
 
 // preIngestIndexes are the indexes required for PromoteFlaggedIPs to run

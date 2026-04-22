@@ -32,10 +32,11 @@ type Classified struct {
 // Classifier bundles all the labelers so a caller can pass one object to the
 // backend and get every derived attribute filled in.
 type Classifier struct {
-	Bots    *BotDetector
-	Static  *StaticMatcher
-	Attacks *AttackMatcher // may be nil when attack detection is disabled
-	Geo     *Geo
+	Bots       *BotDetector
+	Static     *StaticMatcher
+	Attacks    *AttackMatcher // may be nil when attack detection is disabled
+	Geo        *Geo
+	ManualTags *ManualTagSet // may be nil; user-set per-IP overrides
 }
 
 // Options configures New().
@@ -79,10 +80,11 @@ func New(opts Options) (*Classifier, error) {
 		return nil, err
 	}
 	return &Classifier{
-		Bots:    bots,
-		Static:  NewStaticMatcher(exts),
-		Attacks: attacks,
-		Geo:     geo,
+		Bots:       bots,
+		Static:     NewStaticMatcher(exts),
+		Attacks:    attacks,
+		Geo:        geo,
+		ManualTags: NewManualTagSet(),
 	}, nil
 }
 
@@ -98,13 +100,33 @@ func (c *Classifier) Close() error {
 // not the same kind of threat as public-internet scanners, and mixing
 // them in the attack view obscures real signal. Local traffic still gets
 // its own category in the dashboard breakdown so it stays visible.
+//
+// Manual tags always win: if the user has tagged an IP, Classify skips
+// every heuristic (bot UA, private-range, attack-URI, IP-flag) and uses the
+// tag's canonical settings instead. This keeps user overrides stable
+// across re-classification in the live tail.
 func (c *Classifier) Classify(ev parser.Event) Classified {
 	ua := ParseUA(ev.UserAgent)
 	country, city := c.Geo.Lookup(ev.RemoteIP)
 	isLocal := IsLocalIP(ev.RemoteIP)
+	isBot := c.Bots.IsBot(ev.UserAgent)
 	isMal := false
 	reason := ""
-	if c.Attacks != nil && !isLocal {
+
+	manualTag, hasManual := c.ManualTags.Get(ev.RemoteIP)
+	if hasManual {
+		switch manualTag {
+		case ManualTagReal:
+			isBot, isLocal = false, false
+		case ManualTagLocal:
+			isBot, isLocal = false, true
+		case ManualTagBot:
+			isBot, isLocal = true, false
+		case ManualTagMalicious:
+			isMal, reason = true, "manual:tagged"
+		}
+	}
+	if !hasManual && c.Attacks != nil && !isLocal {
 		if r, ok := c.Attacks.IPReason(ev.RemoteIP); ok {
 			isMal = true
 			reason = "ip_flag:" + r
@@ -116,7 +138,7 @@ func (c *Classifier) Classify(ev parser.Event) Classified {
 	}
 	return Classified{
 		Event:           ev,
-		IsBot:           c.Bots.IsBot(ev.UserAgent),
+		IsBot:           isBot,
 		IsLocal:         isLocal,
 		IsStatic:        c.Static.IsStatic(ev.URI),
 		IsMalicious:     isMal,

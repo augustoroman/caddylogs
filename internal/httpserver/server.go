@@ -31,6 +31,7 @@ type Server struct {
 	ingestMu         sync.RWMutex
 	ingestBusy       bool
 	classificationFn ClassificationFunc // optional; when set, /api/classification is available
+	tagFn            TagFunc            // optional; when set, /api/tag is available
 }
 
 // ClassificationFunc computes the 6-cell breakdown for the header strip.
@@ -42,6 +43,18 @@ type ClassificationFunc func(ctx context.Context, fromNs, toNs int64) (any, erro
 // Passing nil disables the endpoint.
 func (s *Server) SetClassificationFn(fn ClassificationFunc) {
 	s.classificationFn = fn
+}
+
+// TagFunc applies a user-supplied per-IP override. Tag is one of
+// "real" | "local" | "bot" | "malicious". Implementations are expected to
+// persist the tag, update existing rows in the store, and teach the
+// classifier so subsequent events from the same IP are routed the same way.
+type TagFunc func(ctx context.Context, ip, tag string) error
+
+// SetTagFn registers the function used by /api/tag. Passing nil disables
+// the endpoint.
+func (s *Server) SetTagFn(fn TagFunc) {
+	s.tagFn = fn
 }
 
 // New builds a Server. assets is the filesystem of UI assets; pass the
@@ -66,6 +79,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/dimensions", s.handleDimensions)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/classification", s.handleClassification)
+	mux.HandleFunc("/api/tag", s.handleTag)
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.Handle("/", http.FileServer(http.FS(s.assets)))
 	return mux
@@ -174,6 +188,41 @@ func (s *Server) handleClassification(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, result)
+}
+
+// handleTag applies a manual per-IP override. The post body is
+//
+//	{"ip": "1.2.3.4", "tag": "real|local|bot|malicious"}
+//
+// On success the store has been updated and the classifier's in-memory tag
+// set has been told about the change. The client is expected to refresh
+// its panels to pick up the moved rows.
+func (s *Server) handleTag(w http.ResponseWriter, r *http.Request) {
+	if s.tagFn == nil {
+		s.writeError(w, http.StatusNotFound, "tag endpoint not configured")
+		return
+	}
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	var req struct {
+		IP  string `json:"ip"`
+		Tag string `json:"tag"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.IP == "" || req.Tag == "" {
+		s.writeError(w, http.StatusBadRequest, "ip and tag are required")
+		return
+	}
+	if err := s.tagFn(r.Context(), req.IP, req.Tag); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ip": req.IP, "tag": req.Tag})
 }
 
 // handleStatus reports ingest status + server info.
