@@ -44,11 +44,34 @@ type RootOnly struct {
 	// MinDistinctDays is the multi-day revisit threshold. Two days of
 	// root-only activity is already enough to rule out a one-off visit.
 	MinDistinctDays int
+	// IgnoredStatic lists URIs that should NOT disqualify a candidate
+	// even though they live in the static table. These are incidental
+	// fetches — favicons, robots.txt, social-preview assets — that
+	// every client (bot or browser) may hit without the operator
+	// considering it "real engagement". A real browser loading the
+	// home page fetches many more than just these, so the rule still
+	// rejects IPs whose only static hits are the canonical CSS/JS set.
+	IgnoredStatic []string
+}
+
+// DefaultIgnoredStatic is the list of incidental static URIs that do
+// not count against the root-only pattern. Operators can override on
+// a per-instance basis (e.g. to add a site-specific social-card URL)
+// by replacing RootOnly.IgnoredStatic before registration.
+var DefaultIgnoredStatic = []string{
+	"/favicon.ico",
+	"/img/favicon.ico",
+	"/img/slack-card.png",
+	"/robots.txt",
 }
 
 // NewRootOnly returns the rule with default thresholds.
 func NewRootOnly() *RootOnly {
-	return &RootOnly{MinDailyRoot: 4, MinDistinctDays: 2}
+	return &RootOnly{
+		MinDailyRoot:    4,
+		MinDistinctDays: 2,
+		IgnoredStatic:   append([]string(nil), DefaultIgnoredStatic...),
+	}
 }
 
 func (r *RootOnly) Name() string { return RootOnlyName }
@@ -85,8 +108,19 @@ func (r *RootOnly) Run(ctx context.Context, env RunEnv) ([]Decision, error) {
 	if err != nil {
 		return nil, err
 	}
+	ignored := r.IgnoredStatic
+	if ignored == nil {
+		ignored = []string{}
+	}
+	ignoredJSON, err := json.Marshal(ignored)
+	if err != nil {
+		return nil, err
+	}
 	const q = `
 WITH claimed(ip) AS (
+    SELECT value FROM json_each(?)
+),
+ignored_static(uri) AS (
     SELECT value FROM json_each(?)
 ),
 daily AS (
@@ -120,11 +154,13 @@ SELECT s.ip, s.total_hits, s.distinct_days, s.max_daily
         SELECT 1 FROM requests_static x
          WHERE x.ip = s.ip
            AND x.is_local = 0
+           AND x.uri NOT IN (SELECT uri FROM ignored_static)
          LIMIT 1)
  ORDER BY s.distinct_days DESC, s.max_daily DESC`
 
 	rows, err := env.DB.QueryContext(ctx, q,
-		string(claimedJSON), nsPerDay, r.MinDailyRoot, r.MinDistinctDays,
+		string(claimedJSON), string(ignoredJSON),
+		nsPerDay, r.MinDailyRoot, r.MinDistinctDays,
 	)
 	if err != nil {
 		return nil, err

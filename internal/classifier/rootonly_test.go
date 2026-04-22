@@ -72,6 +72,20 @@ func TestRootOnly_FlagsBotsOnlyWhenAllConditionsMet(t *testing.T) {
 		// pattern matches).
 		mk("6.6.6.6", "/", d(0)), mk("6.6.6.6", "/", d(1)),
 		mk("6.6.6.6", "/", d(2)), mk("6.6.6.6", "/script.js", d(3)),
+
+		// 7.7.7.7: multi-day root hits + favicon + robots.txt — still
+		// a candidate. Favicons and robots.txt are incidental fetches
+		// every client makes; they don't count as "real engagement".
+		mk("7.7.7.7", "/", d(0)), mk("7.7.7.7", "/", d(1)),
+		mk("7.7.7.7", "/favicon.ico", d(0)),
+		mk("7.7.7.7", "/robots.txt", d(1)),
+
+		// 8.8.8.9: multi-day root hits + a favicon + a real image — NOT
+		// a candidate (the real image disqualifies even with an
+		// otherwise-ignorable favicon hit).
+		mk("8.8.8.9", "/", d(0)), mk("8.8.8.9", "/", d(1)),
+		mk("8.8.8.9", "/favicon.ico", d(0)),
+		mk("8.8.8.9", "/img/hero.png", d(2)),
 	}
 	if err := store.Ingest(ctx, events); err != nil {
 		t.Fatal(err)
@@ -90,11 +104,12 @@ func TestRootOnly_FlagsBotsOnlyWhenAllConditionsMet(t *testing.T) {
 		}
 	}
 
-	want := map[string]bool{"1.1.1.1": true, "5.5.5.5": true}
+	want := map[string]bool{"1.1.1.1": true, "5.5.5.5": true, "7.7.7.7": true}
 	for ip, expected := range map[string]bool{
 		"1.1.1.1": true, "2.2.2.2": false,
 		"3.3.3.3": false, "4.4.4.4": false,
 		"5.5.5.5": true, "6.6.6.6": false,
+		"7.7.7.7": true, "8.8.8.9": false,
 	} {
 		if flagged[ip] != expected {
 			t.Errorf("ip %s flagged=%v, want %v", ip, flagged[ip], expected)
