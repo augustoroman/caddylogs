@@ -267,6 +267,79 @@ func reseedAttackersFromStore(ctx context.Context, store *sqlitestore.Store, cls
 	})
 }
 
+// resolveTagsFile returns the path to the persistent tags JSON file. An
+// empty override yields ~/.config/caddylogs/tags.json (OS-appropriate
+// location via os.UserConfigDir). Lives in the config dir rather than the
+// cache dir because tags are user-curated data and must survive
+// `clear-cache` and cache-key invalidation caused by a growing live log.
+func resolveTagsFile(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "caddylogs", "tags.json"), nil
+}
+
+// loadManualTags wires a persistent ManualTagSet into the classifier. On
+// first run, when the JSON file is empty but the cached DB still holds
+// tags from the old in-DB scheme, we migrate them to the external file
+// so the next cache-key invalidation doesn't lose them.
+//
+// Runs BEFORE bulk ingest so Classify honors tags during initial
+// classification and rows land in the right table from the start.
+func loadManualTags(ctx context.Context, store *sqlitestore.Store, cls *classify.Classifier, c commonFlags) error {
+	path, err := resolveTagsFile(c.TagsFile)
+	if err != nil {
+		return err
+	}
+	set, err := classify.LoadManualTagSet(path)
+	if err != nil {
+		return err
+	}
+	cls.ManualTags = set
+	if set.Count() == 0 {
+		var migrated int
+		err := store.WithManualTags(ctx, func(ip string, tag classify.ManualTag, at int64) {
+			set.PutAt(ip, tag, at)
+			migrated++
+		})
+		if err != nil {
+			return err
+		}
+		if migrated > 0 {
+			if err := set.Save(); err != nil {
+				return fmt.Errorf("save migrated tags: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "caddylogs: migrated %d manual tag(s) to %s\n", migrated, path)
+		}
+	}
+	if set.Count() > 0 {
+		fmt.Fprintf(os.Stderr, "caddylogs: loaded %d manual tag(s) from %s\n", set.Count(), path)
+	}
+	return nil
+}
+
+// replayManualTags calls Store.ApplyManualTag for every loaded tag. After
+// initialIngest this guarantees the DB reflects the current external tag
+// state — useful when a cache-key change has rebuilt the DB from logs
+// (bulk ingest already classifies via the loaded set, but replay also
+// populates the DB's manual_tags table for SQL-level inspection) or when
+// the cached DB is from before the tag was added.
+func replayManualTags(ctx context.Context, store *sqlitestore.Store, cls *classify.Classifier) error {
+	if cls == nil || cls.ManualTags == nil || cls.ManualTags.Count() == 0 {
+		return nil
+	}
+	for _, e := range cls.ManualTags.List() {
+		if err := store.ApplyManualTag(ctx, e.IP, e.Tag); err != nil {
+			return fmt.Errorf("apply tag %s=%s: %w", e.IP, e.Tag, err)
+		}
+	}
+	return nil
+}
+
 // applyDefaultFilters adds is_bot=false / is_local=false exclusions unless
 // the user opted in.
 func applyDefaultFilters(f *backend.Filter, flags commonFlags) {

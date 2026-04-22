@@ -10,6 +10,7 @@ type commonFlags struct {
 	GeoIPPath         string
 	CacheDir          string
 	NoCache           bool
+	TagsFile          string
 	BotList           string
 	BotPatterns       []string
 	StaticExts        []string
@@ -46,6 +47,8 @@ func bindCommon(cmd *kingpin.CmdClause, c *commonFlags) {
 		StringVar(&c.CacheDir)
 	cmd.Flag("no-cache", "Ingest into an ephemeral tempfile; never reuse a prior DB.").
 		BoolVar(&c.NoCache)
+	cmd.Flag("tags-file", "Path to the JSON file holding persistent manual IP tags. Lives outside the cache dir so tags survive re-ingest when log files grow. Empty means the OS config dir.").
+		StringVar(&c.TagsFile)
 	cmd.Flag("bot-list", "Override the embedded bot pattern list with a file (one pattern per line).").
 		StringVar(&c.BotList)
 	cmd.Flag("bot-pattern", "Additional case-insensitive substring pattern to treat as a bot. Repeatable.").

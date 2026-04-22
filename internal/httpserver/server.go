@@ -31,7 +31,9 @@ type Server struct {
 	ingestMu         sync.RWMutex
 	ingestBusy       bool
 	classificationFn ClassificationFunc // optional; when set, /api/classification is available
-	tagFn            TagFunc            // optional; when set, /api/tag is available
+	tagFn            TagFunc            // optional; when set, POST /api/tag is available
+	tagListFn        TagListFunc        // optional; when set, GET /api/tags is available
+	tagRemoveFn      TagRemoveFunc      // optional; when set, DELETE /api/tag is available
 }
 
 // ClassificationFunc computes the 6-cell breakdown for the header strip.
@@ -57,6 +59,26 @@ func (s *Server) SetTagFn(fn TagFunc) {
 	s.tagFn = fn
 }
 
+// TagListFunc returns the currently persisted tag set as a JSON-
+// serializable value. Used by /api/tags to let the UI inspect and manage
+// overrides.
+type TagListFunc func(ctx context.Context) (any, error)
+
+// SetTagListFn registers the /api/tags GET handler.
+func (s *Server) SetTagListFn(fn TagListFunc) {
+	s.tagListFn = fn
+}
+
+// TagRemoveFunc clears the manual tag for ip from both the persistent
+// store and the in-memory classifier. It does not revert already-
+// classified rows — callers handle that separately.
+type TagRemoveFunc func(ctx context.Context, ip string) error
+
+// SetTagRemoveFn registers the /api/tag DELETE handler.
+func (s *Server) SetTagRemoveFn(fn TagRemoveFunc) {
+	s.tagRemoveFn = fn
+}
+
 // New builds a Server. assets is the filesystem of UI assets; pass the
 // embedded fs.FS from the assets package.
 func New(store backend.Store, assets fs.FS, defaults DefaultFilter) *Server {
@@ -80,6 +102,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/classification", s.handleClassification)
 	mux.HandleFunc("/api/tag", s.handleTag)
+	mux.HandleFunc("/api/tags", s.handleTagList)
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.Handle("/", http.FileServer(http.FS(s.assets)))
 	return mux
@@ -190,20 +213,28 @@ func (s *Server) handleClassification(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, result)
 }
 
-// handleTag applies a manual per-IP override. The post body is
+// handleTag applies or removes a manual per-IP override.
 //
-//	{"ip": "1.2.3.4", "tag": "real|local|bot|malicious"}
+//	POST   /api/tag          {"ip": "1.2.3.4", "tag": "real|local|bot|malicious"}
+//	DELETE /api/tag?ip=1.2.3.4
 //
-// On success the store has been updated and the classifier's in-memory tag
-// set has been told about the change. The client is expected to refresh
-// its panels to pick up the moved rows.
+// POST persists the tag and updates existing rows; DELETE clears the tag
+// from the persistent file and classifier but leaves already-classified
+// rows where they are (the UI surfaces this caveat).
 func (s *Server) handleTag(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		s.handleTagSet(w, r)
+	case http.MethodDelete:
+		s.handleTagDelete(w, r)
+	default:
+		s.writeError(w, http.StatusMethodNotAllowed, "POST or DELETE only")
+	}
+}
+
+func (s *Server) handleTagSet(w http.ResponseWriter, r *http.Request) {
 	if s.tagFn == nil {
 		s.writeError(w, http.StatusNotFound, "tag endpoint not configured")
-		return
-	}
-	if r.Method != http.MethodPost {
-		s.writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
 	var req struct {
@@ -223,6 +254,42 @@ func (s *Server) handleTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ip": req.IP, "tag": req.Tag})
+}
+
+func (s *Server) handleTagDelete(w http.ResponseWriter, r *http.Request) {
+	if s.tagRemoveFn == nil {
+		s.writeError(w, http.StatusNotFound, "tag endpoint not configured")
+		return
+	}
+	ip := r.URL.Query().Get("ip")
+	if ip == "" {
+		s.writeError(w, http.StatusBadRequest, "ip is required")
+		return
+	}
+	if err := s.tagRemoveFn(r.Context(), ip); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ip": ip})
+}
+
+// handleTagList returns every currently-persisted manual tag so the
+// dashboard can surface the override list. GET only.
+func (s *Server) handleTagList(w http.ResponseWriter, r *http.Request) {
+	if s.tagListFn == nil {
+		s.writeError(w, http.StatusNotFound, "tag endpoint not configured")
+		return
+	}
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	out, err := s.tagListFn(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }
 
 // handleStatus reports ingest status + server info.

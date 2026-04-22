@@ -66,6 +66,17 @@
   <div id="static-panels"></div>
 </section>
 
+<section id="tags-section" class="panel hidden">
+  <div class="panel-title">Manual IP tags <span class="muted" id="tags-count">0</span></div>
+  <table id="tags-table">
+    <thead><tr>
+      <th>IP</th><th>Tag</th><th>Since</th><th></th>
+    </tr></thead>
+    <tbody id="tags-body"></tbody>
+  </table>
+  <div class="hint">Right-click an IP anywhere in the dashboard to tag it. Tags are stored at <code id="tags-file-path" class="muted"></code> and survive cache rebuilds. Removing a tag leaves existing classified rows where they are — re-ingest (<code>clear-cache</code> + restart) or re-tag to correct historical data.</div>
+</section>
+
 <section id="rows-section" class="panel">
   <div class="panel-title">Recent requests <span id="rows-count" class="muted"></span></div>
   <table id="rows-table">

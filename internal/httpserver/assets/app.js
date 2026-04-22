@@ -686,6 +686,7 @@ async function refreshAll() {
   const effectiveFilter = viewFilter(state.filter, state.view);
   const body = { filter: effectiveFilter, topn: state.topN, table, order_by: state.sortBy };
   refreshBreakdown();
+  refreshTagList();
   try {
     const url = table === 'static' ? '/api/static' : '/api/dashboard';
     const r = await fetch(url, {
@@ -941,6 +942,61 @@ async function applyTag(ip, tag) {
     refreshAll();
   } catch (e) {
     alert('Failed to tag ' + ip + ' as ' + tag + ': ' + e.message);
+  }
+}
+
+// --- tag inspection + removal ---
+// Fetches the persistent tag set and renders a dismissable list so the
+// operator can audit or revoke overrides at a glance. Removing a tag
+// clears the file + classifier entry but deliberately leaves already-
+// classified rows alone; the hint in the HTML explains the trade.
+async function refreshTagList() {
+  const sec = document.getElementById('tags-section');
+  const body = document.getElementById('tags-body');
+  const count = document.getElementById('tags-count');
+  const pathEl = document.getElementById('tags-file-path');
+  try {
+    const data = await getJSON('/api/tags');
+    const tags = data.tags || [];
+    if (pathEl) pathEl.textContent = data.path || '';
+    if (tags.length === 0) {
+      sec.classList.add('hidden');
+      count.textContent = '0';
+      body.innerHTML = '';
+      return;
+    }
+    sec.classList.remove('hidden');
+    count.textContent = String(tags.length);
+    body.innerHTML = '';
+    for (const t of tags) {
+      const tr = document.createElement('tr');
+      const since = t.at ? new Date(Math.round(t.at / 1e6)).toISOString().replace('T', ' ').slice(0, 19) : '';
+      tr.innerHTML = `
+        <td class="tag-ip" title="click to filter by this IP">${escapeHTML(t.ip)}</td>
+        <td><span class="tag-badge tag-${escapeHTML(t.tag)}">${escapeHTML(t.tag)}</span></td>
+        <td class="muted">${escapeHTML(since)}</td>
+        <td class="right"><button class="btn btn-ghost tag-remove" type="button">untag</button></td>
+      `;
+      tr.querySelector('.tag-ip').addEventListener('click', () => addFilter('ip', t.ip, false));
+      tr.querySelector('.tag-remove').addEventListener('click', async () => {
+        await removeTag(t.ip);
+      });
+      body.appendChild(tr);
+    }
+  } catch (e) {
+    console.error('tags:', e);
+  }
+}
+async function removeTag(ip) {
+  try {
+    const r = await fetch('/api/tag?ip=' + encodeURIComponent(ip), { method: 'DELETE' });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.error || ('HTTP ' + r.status));
+    }
+    refreshAll();
+  } catch (e) {
+    alert('Failed to untag ' + ip + ': ' + e.message);
   }
 }
 

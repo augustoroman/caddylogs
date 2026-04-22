@@ -30,16 +30,21 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 	}
 	defer store.Close()
 
+	// Load persistent tags BEFORE ingest so Classify honors them during
+	// initial classification; persistence lives outside the cache dir so
+	// tags survive a cache-key invalidation (e.g. the live log grew).
+	if err := loadManualTags(ctx, store, cls, opts.commonFlags); err != nil {
+		return err
+	}
+
 	if err := initialIngest(ctx, store, cls, paths, cached, opts.commonFlags); err != nil {
 		return err
 	}
 
-	// Seed the classifier's manual-tag set from whatever was persisted in
-	// the cached DB so the live tail routes the same IPs consistently with
-	// what the user has already tagged.
-	if err := store.WithManualTags(ctx, func(ip string, tag classify.ManualTag) {
-		cls.ManualTags.Set(ip, tag)
-	}); err != nil {
+	// Replay tags into the DB so row placement reflects the external set.
+	// Cheap when the DB is already in sync (fresh ingest that just ran
+	// with these tags), necessary when a cached DB predates new tags.
+	if err := replayManualTags(ctx, store, cls); err != nil {
 		return err
 	}
 
@@ -52,9 +57,10 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 	server.SetClassificationFn(func(ctx context.Context, fromNs, toNs int64) (any, error) {
 		return store.Classification(ctx, fromNs, toNs)
 	})
-	// Wire manual IP tagging: the HTTP handler persists the tag and updates
-	// existing rows via the store; we also update the classifier's in-memory
-	// set so live-tail events for that IP are classified consistently.
+	// Wire manual IP tagging: the HTTP handler persists the tag to the
+	// external file (so it survives cache-key invalidation), updates
+	// existing rows in the store, and teaches the classifier so live-tail
+	// events for that IP are classified consistently.
 	server.SetTagFn(func(ctx context.Context, ip, tag string) error {
 		t := classify.ManualTag(tag)
 		if !classify.ValidManualTag(t) {
@@ -63,8 +69,24 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 		if err := store.ApplyManualTag(ctx, ip, t); err != nil {
 			return err
 		}
-		cls.ManualTags.Set(ip, t)
-		return nil
+		return cls.ManualTags.Set(ip, t)
+	})
+	// Wire tag inspection + removal. Removing a tag clears the DB's
+	// manual_tags entry and deletes from the persistent set, but does NOT
+	// revert already-classified rows — re-ingest or re-tag to correct
+	// those. This is a deliberate simplicity trade: auto-reclassification
+	// would need per-row UA/URI re-scoring and is out of scope.
+	server.SetTagListFn(func(ctx context.Context) (any, error) {
+		return map[string]any{
+			"tags": cls.ManualTags.List(),
+			"path": cls.ManualTags.Path(),
+		}, nil
+	})
+	server.SetTagRemoveFn(func(ctx context.Context, ip string) error {
+		if err := store.RemoveManualTag(ctx, ip); err != nil {
+			return err
+		}
+		return cls.ManualTags.Delete(ip)
 	})
 
 	// Live tail on a separate goroutine. Cancellation via ctx.

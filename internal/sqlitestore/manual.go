@@ -84,22 +84,37 @@ func (s *Store) ApplyManualTag(ctx context.Context, ip string, tag classify.Manu
 	return tx.Commit()
 }
 
-// WithManualTags iterates every persisted (ip, tag) pair. Used at startup
-// to rebuild the classifier's in-memory ManualTagSet from a cached DB.
-func (s *Store) WithManualTags(ctx context.Context, fn func(ip string, tag classify.ManualTag)) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT ip, tag FROM manual_tags`)
+// WithManualTags iterates every persisted (ip, tag, at) triple in the DB's
+// manual_tags table. Used once, at startup, to migrate a legacy DB's tags
+// into the external JSON file when the JSON file is empty.
+func (s *Store) WithManualTags(ctx context.Context, fn func(ip string, tag classify.ManualTag, at int64)) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT ip, tag, at FROM manual_tags`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var ip, tag string
-		if err := rows.Scan(&ip, &tag); err != nil {
+		var at int64
+		if err := rows.Scan(&ip, &tag, &at); err != nil {
 			return err
 		}
-		fn(ip, classify.ManualTag(tag))
+		fn(ip, classify.ManualTag(tag), at)
 	}
 	return rows.Err()
+}
+
+// RemoveManualTag deletes the tag record for ip from the manual_tags
+// table. It does NOT change the classification of already-ingested rows
+// (they stay where ApplyManualTag put them); callers are responsible for
+// also removing the tag from the classifier's in-memory set so future
+// live-tail events revert to auto-classification.
+func (s *Store) RemoveManualTag(ctx context.Context, ip string) error {
+	if ip == "" {
+		return fmt.Errorf("empty ip")
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM manual_tags WHERE ip=?`, ip)
+	return err
 }
 
 func moveToMalicious(ctx context.Context, tx *sql.Tx, src, ip string) error {

@@ -86,7 +86,7 @@ func TestManualTag_MovesRows(t *testing.T) {
 
 	// The tag should be persisted and iterable.
 	seen := map[string]classify.ManualTag{}
-	if err := store.WithManualTags(ctx, func(ip string, tag classify.ManualTag) {
+	if err := store.WithManualTags(ctx, func(ip string, tag classify.ManualTag, at int64) {
 		seen[ip] = tag
 	}); err != nil {
 		t.Fatal(err)

@@ -26,7 +26,15 @@ func runReport(ctx context.Context, opts *reportFlags) error {
 	}
 	defer store.Close()
 
+	if err := loadManualTags(ctx, store, cls, opts.commonFlags); err != nil {
+		return err
+	}
+
 	if err := initialIngest(ctx, store, cls, paths, cached, opts.commonFlags); err != nil {
+		return err
+	}
+
+	if err := replayManualTags(ctx, store, cls); err != nil {
 		return err
 	}
 

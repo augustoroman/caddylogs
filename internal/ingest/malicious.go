@@ -40,6 +40,16 @@ func FinalizeAttacks(ctx context.Context, store *sqlitestore.Store, cls *classif
 			all[ip] = reason
 		}
 	}
+	// Manual non-malicious tags win over every heuristic. Drop them from
+	// the promote set so a user-declared "real"/"local"/"bot" IP is not
+	// relocated to malicious by the behavioral rule.
+	if cls != nil && cls.ManualTags != nil {
+		for ip := range all {
+			if t, ok := cls.ManualTags.Get(ip); ok && t != classify.ManualTagMalicious {
+				delete(all, ip)
+			}
+		}
+	}
 	if cls != nil && cls.Attacks != nil {
 		for ip, reason := range all {
 			cls.Attacks.FlagIP(ip, reason)

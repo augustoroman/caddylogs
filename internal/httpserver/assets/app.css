@@ -312,3 +312,25 @@ a:hover { text-decoration: underline; }
 .tag-menu button[data-tag="bot"]:hover       { background: #3d331d; border-color: #c89a3a; }
 .tag-menu button[data-tag="malicious"]:hover { background: #3d1d1d; border-color: var(--err); }
 .tag-menu button.cancel { color: var(--muted); border-style: dashed; }
+
+#tags-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+#tags-table th, #tags-table td {
+  padding: 3px 6px; text-align: left; border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+#tags-table th { color: var(--muted); font-weight: 500; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; }
+#tags-table td.right { text-align: right; }
+#tags-table .tag-ip { cursor: pointer; color: var(--accent); }
+#tags-table .tag-ip:hover { text-decoration: underline; }
+#tags-table .tag-remove { font-size: 10px; padding: 1px 6px; color: var(--err); border-color: #6a2a32; }
+#tags-table .tag-remove:hover { background: #3d1d1d; }
+.tag-badge {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  font-size: 10px; font-weight: 600;
+  color: #0a1016;
+}
+.tag-badge.tag-real      { background: var(--ok); }
+.tag-badge.tag-local     { background: #7aa6e0; }
+.tag-badge.tag-bot       { background: #c89a3a; }
+.tag-badge.tag-malicious { background: var(--err); color: #1a0707; }
+#tags-section code { background: var(--bg); padding: 0 4px; border-radius: 3px; }
