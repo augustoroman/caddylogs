@@ -164,10 +164,10 @@ func (s *Store) queryTopN(ctx context.Context, table, where string, args []any, 
          FROM %s%s
          GROUP BY k
          ORDER BY %s DESC
-         LIMIT ?`,
+         LIMIT ? OFFSET ?`,
 		quote(col), table, where, topnOrderBy(q),
 	)
-	allArgs := append(append([]any{}, args...), limit)
+	allArgs := append(append([]any{}, args...), limit, q.Offset)
 	rows, err := s.db.QueryContext(ctx, sqlStr, allArgs...)
 	if err != nil {
 		return nil, err

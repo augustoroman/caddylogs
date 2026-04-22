@@ -81,6 +81,39 @@ var maliciousPanels = []panelSpec{
 	{Name: "referer", GroupBy: backend.DimReferrer},
 }
 
+// staticPanels is the panel set used by /api/static and by handlePanel when
+// Table == static. Kept aligned with the server-side slice used in
+// handleStatic so /api/panel can resolve any name shown on the Static view.
+var staticPanels = []panelSpec{
+	{Name: "uri", GroupBy: backend.DimURI},
+	{Name: "ip", GroupBy: backend.DimIP},
+	{Name: "referer", GroupBy: backend.DimReferrer},
+	{Name: "host", GroupBy: backend.DimHost},
+	{Name: "country", GroupBy: backend.DimCountry},
+}
+
+// panelsFor returns the panel spec list used for a given table.
+func panelsFor(t backend.Table) []panelSpec {
+	switch t {
+	case backend.TableStatic:
+		return staticPanels
+	case backend.TableMalicious:
+		return maliciousPanels
+	default:
+		return dashboardPanels
+	}
+}
+
+// findPanelSpec resolves a panel by name within a table's list.
+func findPanelSpec(t backend.Table, name string) *panelSpec {
+	for _, p := range panelsFor(t) {
+		if p.Name == name {
+			return &p
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeDashboardRequest(r)
 	if err != nil {
@@ -120,19 +153,81 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	if req.TopN <= 0 {
 		req.TopN = 10
 	}
-	panels := []panelSpec{
-		{Name: "uri", GroupBy: backend.DimURI},
-		{Name: "ip", GroupBy: backend.DimIP},
-		{Name: "referer", GroupBy: backend.DimReferrer},
-		{Name: "host", GroupBy: backend.DimHost},
-		{Name: "country", GroupBy: backend.DimCountry},
-	}
-	resp, err := s.runDashboard(r.Context(), req, panels)
+	resp, err := s.runDashboard(r.Context(), req, staticPanels)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// handlePanel returns a single panel's next page of rows. The client uses
+// this for its "Show more" button without refetching the whole dashboard.
+// Request body:
+//   { filter, table, panel, offset, limit, order_by }
+// Response body:
+//   { panel, rows, total, has_more }
+func (s *Server) handlePanel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DashboardRequest
+		Panel   string `json:"panel"`
+		Offset  int    `json:"offset"`
+		Limit   int    `json:"limit"`
+		OrderBy string `json:"order_by"`
+	}
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if req.Table == "" {
+		req.Table = backend.TableDynamic
+	}
+	s.applyDefaults(&req.Filter, req.Table)
+
+	spec := findPanelSpec(req.Table, req.Panel)
+	if spec == nil {
+		s.writeError(w, http.StatusNotFound, "unknown panel "+req.Panel)
+		return
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	order := req.OrderBy
+	if order == "" {
+		order = spec.Order
+	}
+	filter := mergeFilters(req.Filter, spec.Extra)
+	res, err := s.store.Query(r.Context(), backend.Query{
+		Table:   req.Table,
+		Kind:    backend.KindTopN,
+		Filter:  filter,
+		GroupBy: spec.GroupBy,
+		Limit:   limit,
+		Offset:  req.Offset,
+		OrderBy: order,
+	})
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	rows := res.TopN
+	if rows == nil {
+		rows = []backend.Group{} // keep the wire shape an array, never null
+	}
+	out := map[string]any{
+		"panel":    req.Panel,
+		"rows":     rows,
+		"offset":   req.Offset,
+		"has_more": len(rows) == limit, // heuristic: a full page implies more
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleRows(w http.ResponseWriter, r *http.Request) {

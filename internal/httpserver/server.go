@@ -61,6 +61,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/dashboard", s.handleDashboard)
 	mux.HandleFunc("/api/query", s.handleQuery)
 	mux.HandleFunc("/api/static", s.handleStatic)
+	mux.HandleFunc("/api/panel", s.handlePanel)
 	mux.HandleFunc("/api/rows", s.handleRows)
 	mux.HandleFunc("/api/dimensions", s.handleDimensions)
 	mux.HandleFunc("/api/status", s.handleStatus)

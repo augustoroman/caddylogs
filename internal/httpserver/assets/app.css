@@ -179,6 +179,15 @@ a:hover { text-decoration: underline; }
 .panel-table .hits-cell { min-width: 60px; }
 .panel-empty { color: var(--muted); font-size: 11px; padding: 6px 0; }
 
+.panel-footer {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 4px; padding-top: 4px;
+  border-top: 1px dashed var(--border);
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+}
+.panel-footer .btn { padding: 2px 8px; font-size: 11px; }
+.panel-footer .btn[disabled] { opacity: 0.4; cursor: default; }
+
 /* Resize handles live on the right edge of each <th> and are dragged to
    widen / narrow the column. We use a small invisible grab strip that
    turns into a visible line on hover. */

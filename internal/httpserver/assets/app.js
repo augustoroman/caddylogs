@@ -252,60 +252,141 @@ function currentPanelDefs() {
   return state.view === 'malicious' ? MALICIOUS_PANELS : DYNAMIC_PANELS;
 }
 
+// PANEL_PAGE_SIZE governs how many rows "Show more" fetches per click.
+const PANEL_PAGE_SIZE = 25;
+
 function renderPanels(panels) {
   const container = document.getElementById('panels');
   container.innerHTML = '';
   const defs = currentPanelDefs();
   defs.forEach(def => {
-    const rows = panels[def.name] || [];
+    const initialRows = panels[def.name] || [];
     const sec = document.createElement('section');
     sec.className = 'panel';
-    const extraHeader = def.extraCol === 'max_ms' ? 4 : 3;
-    let tableRows = '';
-    if (rows.length === 0) {
-      tableRows = `<tr><td colspan="${extraHeader}" class="panel-empty">no data</td></tr>`;
-    } else {
-      const maxHits = Math.max(...rows.map(r => r.hits || 0)) || 1;
-      tableRows = rows.map(r => {
-        const barWidth = ((r.hits || 0) / maxHits) * 100;
-        const extra = def.extraCol === 'max_ms'
-          ? `<td class="right" title="max ${fmtDuration(r.max_ms)}, avg ${fmtDuration(r.avg_ms)}">${fmtDuration(r.max_ms)}</td>`
-          : '';
-        const val = r.key || '(none)';
-        const hitsTip = `${fmtInt(r.hits)} hits · ${fmtInt(r.visitors)} visitors · ${fmtBytes(r.bytes)}`;
-        return `
-          <tr data-val="${escapeHTML(String(val))}" data-dim="${def.dim}" title="click to filter, shift-click to exclude">
-            <td class="key-cell" title="${escapeHTML(val)}">${escapeHTML(val)}</td>
-            <td class="right hits-cell" title="${escapeHTML(hitsTip)}">${fmtInt(r.hits)}</td>
-            ${extra}
-            <td class="bar-cell"><div class="bar" style="width:${barWidth.toFixed(1)}%"></div></td>
-          </tr>`;
-      }).join('');
-    }
+    sec.dataset.panel = def.name;
     const headers = def.extraCol === 'max_ms'
       ? `<tr><th data-col="key">${escapeHTML(def.dim)}<span class="col-resize"></span></th><th data-col="hits" class="right">hits<span class="col-resize"></span></th><th data-col="max" class="right">max ms<span class="col-resize"></span></th><th data-col="bar"></th></tr>`
       : `<tr><th data-col="key">${escapeHTML(def.dim)}<span class="col-resize"></span></th><th data-col="hits" class="right">hits<span class="col-resize"></span></th><th data-col="bar"></th></tr>`;
     sec.innerHTML = `
-      <div class="panel-title">${escapeHTML(def.title)} <span class="muted">${rows.length}</span></div>
+      <div class="panel-title">${escapeHTML(def.title)} <span class="muted panel-count">${initialRows.length}</span></div>
       <table class="panel-table" data-panel="${def.name}">
         <thead>${headers}</thead>
-        <tbody>${tableRows}</tbody>
+        <tbody></tbody>
       </table>
+      <div class="panel-footer">
+        <span class="panel-status">showing ${initialRows.length}</span>
+        <button class="btn panel-more" type="button">show more</button>
+      </div>
     `;
-    sec.querySelectorAll('tbody tr').forEach(tr => {
-      tr.addEventListener('click', (e) => {
-        // Ignore clicks that originated in a resize handle drag.
-        if (e.target.closest('.col-resize')) return;
-        const val = tr.dataset.val;
-        const dim = tr.dataset.dim;
-        if (!val || val === '(none)') return;
-        addFilter(dim, val, e.shiftKey);
-      });
-    });
     container.appendChild(sec);
+    // Per-panel paging state lives on the section DOM node so it survives
+    // rerenders of unrelated panels.
+    sec._pg = {
+      rows: [],              // all rows loaded so far
+      offset: 0,             // next offset to fetch
+      exhausted: false,      // server returned a short page
+      initialLoaded: false,  // whether initialRows have been installed
+      def: def,
+    };
+    appendPanelRows(sec, initialRows);
+    sec._pg.offset = initialRows.length;
+    sec._pg.initialLoaded = true;
+    if (initialRows.length < state.topN) {
+      sec._pg.exhausted = true; // dashboard fanout already returned fewer than topN -> no more
+    }
+    updatePanelFooter(sec);
+
+    const moreBtn = sec.querySelector('.panel-more');
+    moreBtn.addEventListener('click', () => loadMorePanel(sec));
+
     installColumnResize(sec.querySelector('table.panel-table'));
     restoreColumnWidths(sec.querySelector('table.panel-table'), def.name);
   });
+}
+
+function appendPanelRows(sec, rows) {
+  const def = sec._pg.def;
+  const tbody = sec.querySelector('tbody');
+  if (sec._pg.rows.length === 0 && rows.length === 0) {
+    const cols = def.extraCol === 'max_ms' ? 4 : 3;
+    tbody.innerHTML = `<tr><td colspan="${cols}" class="panel-empty">no data</td></tr>`;
+    return;
+  }
+  if (sec._pg.rows.length === 0) {
+    tbody.innerHTML = ''; // clear any "no data" placeholder
+  }
+  sec._pg.rows = sec._pg.rows.concat(rows);
+  // Recompute max over ALL rows loaded so bar widths stay comparable.
+  const maxHits = Math.max(...sec._pg.rows.map(r => r.hits || 0)) || 1;
+  // Rebuild bars on already-rendered rows proportionally (keeps scale honest
+  // when a late page has a larger hit value than earlier ones).
+  tbody.querySelectorAll('.bar').forEach((barEl, i) => {
+    const row = sec._pg.rows[i];
+    if (!row) return;
+    barEl.style.width = (((row.hits || 0) / maxHits) * 100).toFixed(1) + '%';
+  });
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.dataset.val = r.key || '(none)';
+    tr.dataset.dim = def.dim;
+    tr.setAttribute('title', 'click to filter, shift-click to exclude');
+    const barWidth = ((r.hits || 0) / maxHits) * 100;
+    const extra = def.extraCol === 'max_ms'
+      ? `<td class="right" title="max ${escapeHTML(fmtDuration(r.max_ms))}, avg ${escapeHTML(fmtDuration(r.avg_ms))}">${escapeHTML(fmtDuration(r.max_ms))}</td>`
+      : '';
+    const val = r.key || '(none)';
+    const hitsTip = `${fmtInt(r.hits)} hits · ${fmtInt(r.visitors)} visitors · ${fmtBytes(r.bytes)}`;
+    tr.innerHTML = `
+      <td class="key-cell" title="${escapeHTML(val)}">${escapeHTML(val)}</td>
+      <td class="right hits-cell" title="${escapeHTML(hitsTip)}">${fmtInt(r.hits)}</td>
+      ${extra}
+      <td class="bar-cell"><div class="bar" style="width:${barWidth.toFixed(1)}%"></div></td>`;
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('.col-resize')) return;
+      const v = tr.dataset.val;
+      const d = tr.dataset.dim;
+      if (!v || v === '(none)') return;
+      addFilter(d, v, e.shiftKey);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function updatePanelFooter(sec) {
+  const status = sec.querySelector('.panel-status');
+  const btn = sec.querySelector('.panel-more');
+  const count = sec._pg.rows.length;
+  sec.querySelector('.panel-count').textContent = count;
+  status.textContent = `showing ${count}` + (sec._pg.exhausted ? ' (all)' : '');
+  btn.disabled = !!sec._pg.exhausted;
+  btn.textContent = sec._pg.exhausted ? 'no more' : `show ${PANEL_PAGE_SIZE} more`;
+}
+
+async function loadMorePanel(sec) {
+  if (sec._pg.exhausted) return;
+  const btn = sec.querySelector('.panel-more');
+  btn.disabled = true;
+  btn.textContent = 'loading…';
+  try {
+    const body = {
+      filter: viewFilter(state.filter, state.view),
+      table: viewTable(state.view),
+      panel: sec._pg.def.name,
+      offset: sec._pg.offset,
+      limit: PANEL_PAGE_SIZE,
+    };
+    if (sec._pg.def.extraCol === 'max_ms') body.order_by = 'max_dur';
+    const r = await postJSON('/api/panel', body);
+    const rows = r.rows || [];
+    appendPanelRows(sec, rows);
+    sec._pg.offset += rows.length;
+    if (!r.has_more || rows.length === 0) {
+      sec._pg.exhausted = true;
+    }
+  } catch (e) {
+    console.error('panel more:', e);
+  }
+  updatePanelFooter(sec);
 }
 
 // --- column resize + width persistence ---
