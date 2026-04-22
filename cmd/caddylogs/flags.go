@@ -22,6 +22,7 @@ type commonFlags struct {
 	AttackMinHits     int
 	AttackErrRate     float64
 	AttackMinURIHits  int
+	NoClassifiers     bool
 }
 
 // serveFlags extends commonFlags with server-specific options.
@@ -71,6 +72,8 @@ func bindCommon(cmd *kingpin.CmdClause, c *commonFlags) {
 		Default("0.70").Float64Var(&c.AttackErrRate)
 	cmd.Flag("attack-min-uri-hits", "Behavioral threshold: IPs with at least N attack-URI hits are flagged.").
 		Default("2").IntVar(&c.AttackMinURIHits)
+	cmd.Flag("no-classifiers", "Skip the built-in heuristic classifiers (root-only-burst, etc.) at startup. They can still be run on demand from the dashboard.").
+		BoolVar(&c.NoClassifiers)
 }
 
 func bindServeFlags(cmd *kingpin.CmdClause) *serveFlags {

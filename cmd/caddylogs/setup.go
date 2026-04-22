@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/augustoroman/caddylogs/internal/backend"
+	"github.com/augustoroman/caddylogs/internal/classifier"
 	"github.com/augustoroman/caddylogs/internal/classify"
 	"github.com/augustoroman/caddylogs/internal/ingest"
 	"github.com/augustoroman/caddylogs/internal/progress"
@@ -318,6 +319,26 @@ func loadManualTags(ctx context.Context, store *sqlitestore.Store, cls *classify
 	}
 	if set.Count() > 0 {
 		fmt.Fprintf(os.Stderr, "caddylogs: loaded %d manual tag(s) from %s\n", set.Count(), path)
+	}
+	return nil
+}
+
+// runBuiltInClassifiers executes each registered heuristic classifier
+// and prints a one-line summary per run. Runner.Run is idempotent, so
+// a failure in one classifier doesn't abort the batch — we surface the
+// error and continue so startup is never blocked by a single broken
+// rule.
+func runBuiltInClassifiers(ctx context.Context, runner *classifier.Runner, classifiers []classifier.Classifier) error {
+	for _, c := range classifiers {
+		res, err := runner.Run(ctx, c)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "caddylogs: classifier %s failed: %v\n", c.Name(), err)
+			continue
+		}
+		fmt.Fprintf(os.Stderr,
+			"caddylogs: classifier %s: +%d / -%d / skipped %d (%dms)\n",
+			c.Name(), len(res.Added), len(res.Removed), len(res.Skipped), res.Elapsed,
+		)
 	}
 	return nil
 }

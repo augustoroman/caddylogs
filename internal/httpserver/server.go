@@ -34,6 +34,8 @@ type Server struct {
 	tagFn            TagFunc            // optional; when set, POST /api/tag is available
 	tagListFn        TagListFunc        // optional; when set, GET /api/tags is available
 	tagRemoveFn      TagRemoveFunc      // optional; when set, DELETE /api/tag is available
+	classifierListFn ClassifierListFunc // optional; when set, GET /api/classifiers is available
+	classifierRunFn  ClassifierRunFunc  // optional; when set, POST /api/classifiers/run is available
 }
 
 // ClassificationFunc computes the 6-cell breakdown for the header strip.
@@ -79,6 +81,24 @@ func (s *Server) SetTagRemoveFn(fn TagRemoveFunc) {
 	s.tagRemoveFn = fn
 }
 
+// ClassifierListFunc returns the registered heuristic classifiers in a
+// JSON-serializable form (typically classifier.InfoList).
+type ClassifierListFunc func(ctx context.Context) (any, error)
+
+// ClassifierRunFunc executes a named classifier and returns the result
+// of the reconciliation (adds/removes/skips).
+type ClassifierRunFunc func(ctx context.Context, name string) (any, error)
+
+// SetClassifierListFn registers the GET /api/classifiers handler.
+func (s *Server) SetClassifierListFn(fn ClassifierListFunc) {
+	s.classifierListFn = fn
+}
+
+// SetClassifierRunFn registers the POST /api/classifiers/run handler.
+func (s *Server) SetClassifierRunFn(fn ClassifierRunFunc) {
+	s.classifierRunFn = fn
+}
+
 // New builds a Server. assets is the filesystem of UI assets; pass the
 // embedded fs.FS from the assets package.
 func New(store backend.Store, assets fs.FS, defaults DefaultFilter) *Server {
@@ -103,6 +123,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/classification", s.handleClassification)
 	mux.HandleFunc("/api/tag", s.handleTag)
 	mux.HandleFunc("/api/tags", s.handleTagList)
+	mux.HandleFunc("/api/classifiers", s.handleClassifierList)
+	mux.HandleFunc("/api/classifiers/run", s.handleClassifierRun)
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.Handle("/", http.FileServer(http.FS(s.assets)))
 	return mux
@@ -285,6 +307,47 @@ func (s *Server) handleTagList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := s.tagListFn(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, out)
+}
+
+// handleClassifierList returns the registered heuristic classifiers.
+func (s *Server) handleClassifierList(w http.ResponseWriter, r *http.Request) {
+	if s.classifierListFn == nil {
+		s.writeError(w, http.StatusNotFound, "classifiers not configured")
+		return
+	}
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	out, err := s.classifierListFn(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, out)
+}
+
+// handleClassifierRun runs a named classifier and returns the result.
+func (s *Server) handleClassifierRun(w http.ResponseWriter, r *http.Request) {
+	if s.classifierRunFn == nil {
+		s.writeError(w, http.StatusNotFound, "classifiers not configured")
+		return
+	}
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		s.writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	out, err := s.classifierRunFn(r.Context(), name)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return

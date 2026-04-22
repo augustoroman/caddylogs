@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/augustoroman/caddylogs/internal/classifier"
 	"github.com/augustoroman/caddylogs/internal/classify"
 	"github.com/augustoroman/caddylogs/internal/httpserver"
 	"github.com/augustoroman/caddylogs/internal/livetail"
@@ -46,6 +47,18 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 	// with these tags), necessary when a cached DB predates new tags.
 	if err := replayManualTags(ctx, store, cls); err != nil {
 		return err
+	}
+
+	// Run heuristic classifiers over the stored data. The runner handles
+	// the diff vs. the previous tag set for each classifier and respects
+	// operator overrides (see Runner.Run). Default-on; skip with
+	// --no-classifiers.
+	classifiers := classifier.BuiltIn()
+	runner := classifier.NewRunner(store, cls.ManualTags)
+	if !opts.NoClassifiers {
+		if err := runBuiltInClassifiers(ctx, runner, classifiers); err != nil {
+			return err
+		}
 	}
 
 	server := httpserver.New(store, httpserver.Assets(), httpserver.DefaultFilter{
@@ -87,6 +100,20 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 			return err
 		}
 		return cls.ManualTags.Delete(ip)
+	})
+	server.SetClassifierListFn(func(ctx context.Context) (any, error) {
+		infos := make([]classifier.Info, 0, len(classifiers))
+		for _, c := range classifiers {
+			infos = append(infos, classifier.Info{Name: c.Name(), Description: c.Description()})
+		}
+		return classifier.InfoList{Classifiers: infos}, nil
+	})
+	server.SetClassifierRunFn(func(ctx context.Context, name string) (any, error) {
+		c := classifier.ByName(classifiers, name)
+		if c == nil {
+			return nil, fmt.Errorf("unknown classifier %q", name)
+		}
+		return runner.Run(ctx, c)
 	})
 
 	// Live tail on a separate goroutine. Cancellation via ctx.

@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/augustoroman/caddylogs/internal/backend"
+	"github.com/augustoroman/caddylogs/internal/classifier"
 	"github.com/augustoroman/caddylogs/internal/httpserver"
 )
 
@@ -36,6 +37,13 @@ func runReport(ctx context.Context, opts *reportFlags) error {
 
 	if err := replayManualTags(ctx, store, cls); err != nil {
 		return err
+	}
+
+	if !opts.NoClassifiers {
+		runner := classifier.NewRunner(store, cls.ManualTags)
+		if err := runBuiltInClassifiers(ctx, runner, classifier.BuiltIn()); err != nil {
+			return err
+		}
 	}
 
 	f, err := os.Create(opts.Out)

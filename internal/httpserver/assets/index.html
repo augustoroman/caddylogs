@@ -66,11 +66,22 @@
   <div id="static-panels"></div>
 </section>
 
+<section id="classifiers-section" class="panel hidden">
+  <div class="panel-title">Heuristic classifiers</div>
+  <table id="classifiers-table">
+    <thead><tr>
+      <th>Name</th><th>Description</th><th class="right"></th>
+    </tr></thead>
+    <tbody id="classifiers-body"></tbody>
+  </table>
+  <div class="hint">Each rule scans the "real" pool and tags matching IPs with its own source name. Re-running reconciles: newly-matching IPs are tagged, IPs that no longer match are reverted. Manual tags always win.</div>
+</section>
+
 <section id="tags-section" class="panel hidden">
   <div class="panel-title">Manual IP tags <span class="muted" id="tags-count">0</span></div>
   <table id="tags-table">
     <thead><tr>
-      <th>IP</th><th>Tag</th><th>Since</th><th></th>
+      <th>IP</th><th>Tag</th><th>Source</th><th>Since</th><th></th>
     </tr></thead>
     <tbody id="tags-body"></tbody>
   </table>

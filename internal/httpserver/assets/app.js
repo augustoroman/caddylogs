@@ -971,9 +971,12 @@ async function refreshTagList() {
     for (const t of tags) {
       const tr = document.createElement('tr');
       const since = t.at ? new Date(Math.round(t.at / 1e6)).toISOString().replace('T', ' ').slice(0, 19) : '';
+      const source = t.source || 'manual';
+      const reasonTip = t.reason ? ` — ${t.reason}` : '';
       tr.innerHTML = `
         <td class="tag-ip" title="click to filter by this IP">${escapeHTML(t.ip)}</td>
         <td><span class="tag-badge tag-${escapeHTML(t.tag)}">${escapeHTML(t.tag)}</span></td>
+        <td class="tag-source" title="${escapeHTML(source + reasonTip)}">${escapeHTML(source)}</td>
         <td class="muted">${escapeHTML(since)}</td>
         <td class="right"><button class="btn btn-ghost tag-remove" type="button">untag</button></td>
       `;
@@ -987,6 +990,68 @@ async function refreshTagList() {
     console.error('tags:', e);
   }
 }
+// --- heuristic classifiers ---
+// Classifiers are registered in Go and ship with the binary. The UI
+// lists them with a Run button that triggers a reconciliation and
+// shows a short summary of what changed. Listed once at load — the
+// registry is static for the process lifetime.
+async function loadClassifiers() {
+  const sec = document.getElementById('classifiers-section');
+  const body = document.getElementById('classifiers-body');
+  try {
+    const data = await getJSON('/api/classifiers');
+    const list = data.classifiers || [];
+    if (list.length === 0) {
+      sec.classList.add('hidden');
+      return;
+    }
+    sec.classList.remove('hidden');
+    body.innerHTML = '';
+    for (const c of list) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><code>${escapeHTML(c.name)}</code></td>
+        <td class="muted">${escapeHTML(c.description)}</td>
+        <td class="right"><button class="btn classifier-run" type="button">Run</button></td>
+      `;
+      tr.querySelector('.classifier-run').addEventListener('click', (ev) => {
+        runClassifier(c.name, ev.target);
+      });
+      body.appendChild(tr);
+    }
+  } catch (e) {
+    console.error('classifiers:', e);
+  }
+}
+async function runClassifier(name, btn) {
+  const original = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = 'running…'; }
+  try {
+    const r = await fetch('/api/classifiers/run?name=' + encodeURIComponent(name), { method: 'POST' });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.error || ('HTTP ' + r.status));
+    }
+    const result = await r.json();
+    const added = (result.added || []).length;
+    const removed = (result.removed || []).length;
+    const skipped = (result.skipped || []).length;
+    const elapsed = result.elapsed_ms || 0;
+    const msg = `${name}: +${added} tagged, -${removed} untagged, ${skipped} skipped (manual wins) in ${elapsed}ms`;
+    console.log(msg);
+    if (added || removed) {
+      refreshAll();
+    } else {
+      refreshTagList();
+    }
+    if (btn) { btn.textContent = `+${added} / -${removed}`; }
+    setTimeout(() => { if (btn && original != null) { btn.textContent = original; btn.disabled = false; } }, 2000);
+  } catch (e) {
+    alert('Failed to run classifier ' + name + ': ' + e.message);
+    if (btn && original != null) { btn.textContent = original; btn.disabled = false; }
+  }
+}
+
 async function removeTag(ip) {
   try {
     const r = await fetch('/api/tag?ip=' + encodeURIComponent(ip), { method: 'DELETE' });
@@ -1085,5 +1150,6 @@ async function pollStatus() {
 }
 setInterval(pollStatus, 3000);
 pollStatus();
+loadClassifiers();
 refreshAll();
 openWS();
