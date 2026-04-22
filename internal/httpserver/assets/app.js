@@ -139,8 +139,16 @@ function renderChips() {
 }
 function addFilter(dim, val, excl) {
   const bucket = excl ? state.filter.exclude : state.filter.include;
-  bucket[dim] = bucket[dim] || [];
-  if (!bucket[dim].includes(val)) bucket[dim].push(val);
+  // Include-IP is single-select: a drill-down to one IP almost always
+  // means "switch to this one" rather than "union with the previous".
+  // Filters on other dimensions (status_class, method, ...) stay
+  // additive/OR since those unions are genuinely useful.
+  if (dim === 'ip' && !excl) {
+    bucket[dim] = [val];
+  } else {
+    bucket[dim] = bucket[dim] || [];
+    if (!bucket[dim].includes(val)) bucket[dim].push(val);
+  }
   refreshAll();
 }
 
