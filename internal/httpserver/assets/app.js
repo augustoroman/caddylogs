@@ -392,34 +392,56 @@ function appendRow(r) {
 
 // --- classification breakdown ---
 const BREAKDOWN_CELLS = [
-  { key: 'real_dynamic', label: 'real doc',      cls: 'bd-real-doc',     view: 'dynamic' },
-  { key: 'real_static',  label: 'real static',   cls: 'bd-real-static',  view: 'static'  },
-  { key: 'bot_dynamic',  label: 'bot doc',       cls: 'bd-bot-doc',      view: 'dynamic' },
-  { key: 'bot_static',   label: 'bot static',    cls: 'bd-bot-static',   view: 'static'  },
-  { key: 'malicious_dynamic', label: 'mal doc',    cls: 'bd-mal-doc',    view: 'malicious' },
-  { key: 'malicious_static',  label: 'mal static', cls: 'bd-mal-static', view: 'malicious' },
+  { key: 'real_dynamic',      bkey: 'real_dynamic_bytes',      label: 'real doc',    cls: 'bd-real-doc',    view: 'dynamic' },
+  { key: 'real_static',       bkey: 'real_static_bytes',       label: 'real static', cls: 'bd-real-static', view: 'static'  },
+  { key: 'bot_dynamic',       bkey: 'bot_dynamic_bytes',       label: 'bot doc',     cls: 'bd-bot-doc',     view: 'dynamic' },
+  { key: 'bot_static',        bkey: 'bot_static_bytes',        label: 'bot static',  cls: 'bd-bot-static',  view: 'static'  },
+  { key: 'malicious_dynamic', bkey: 'malicious_dynamic_bytes', label: 'mal doc',     cls: 'bd-mal-doc',     view: 'malicious' },
+  { key: 'malicious_static',  bkey: 'malicious_static_bytes',  label: 'mal static',  cls: 'bd-mal-static',  view: 'malicious' },
 ];
+
+function renderBreakdownBar(barEl, totalEl, cells, data, metric, fmtTotal) {
+  const accessor = metric === 'bytes' ? 'bkey' : 'key';
+  const total = cells.reduce((s, c) => s + (data[c[accessor]] || 0), 0);
+  totalEl.textContent = fmtTotal(total);
+  if (total === 0) {
+    barEl.innerHTML = `<div class="bd-seg" style="flex:1 1 0; background:var(--border); color:var(--muted)">no data</div>`;
+    return;
+  }
+  barEl.innerHTML = cells.map(c => {
+    const n = data[c[accessor]] || 0;
+    const hits = data[c.key] || 0;
+    const bytes = data[c.bkey] || 0;
+    const pct = (n / total) * 100;
+    if (n === 0) return '';
+    const title = `${c.label}\n${fmtInt(hits)} req (${((hits / (cells.reduce((s, x) => s + (data[x.key] || 0), 0) || 1)) * 100).toFixed(1)}% of req)\n${fmtBytes(bytes)} (${((bytes / (cells.reduce((s, x) => s + (data[x.bkey] || 0), 0) || 1)) * 100).toFixed(1)}% of data)`;
+    return `<div class="bd-seg ${c.cls}" style="flex:${n} ${n} 0" title="${escapeHTML(title)}" data-view="${c.view}">${pct >= 6 ? c.label : ''}</div>`;
+  }).join('');
+  barEl.querySelectorAll('.bd-seg').forEach(el => {
+    el.addEventListener('click', () => setView(el.dataset.view));
+  });
+}
+
 async function refreshBreakdown() {
   try {
     const r = await postJSON('/api/classification', { filter: state.filter });
-    const total = BREAKDOWN_CELLS.reduce((s, c) => s + (r[c.key] || 0), 0) || 1;
-    const bar = document.getElementById('breakdown-bar');
+    renderBreakdownBar(
+      document.getElementById('bd-requests'),
+      document.getElementById('bd-requests-total'),
+      BREAKDOWN_CELLS, r, 'hits', n => fmtInt(n) + ' req',
+    );
+    renderBreakdownBar(
+      document.getElementById('bd-bytes'),
+      document.getElementById('bd-bytes-total'),
+      BREAKDOWN_CELLS, r, 'bytes', n => fmtBytes(n),
+    );
+    const totalHits = BREAKDOWN_CELLS.reduce((s, c) => s + (r[c.key] || 0), 0) || 1;
+    const totalBytes = BREAKDOWN_CELLS.reduce((s, c) => s + (r[c.bkey] || 0), 0) || 1;
     const legend = document.getElementById('breakdown-legend');
-    bar.innerHTML = BREAKDOWN_CELLS.map(c => {
-      const n = r[c.key] || 0;
-      const pct = (n / total) * 100;
-      if (n === 0) return '';
-      return `<div class="bd-seg ${c.cls}" style="flex:${n} ${n} 0" title="${c.label}: ${fmtInt(n)} (${pct.toFixed(1)}%)" data-view="${c.view}">${pct >= 6 ? c.label : ''}</div>`;
-    }).join('');
-    bar.querySelectorAll('.bd-seg').forEach(el => {
-      el.addEventListener('click', () => {
-        setView(el.dataset.view);
-      });
-    });
     legend.innerHTML = BREAKDOWN_CELLS.map(c => {
       const n = r[c.key] || 0;
-      const pct = (n / total) * 100;
-      return `<span class="lg"><span class="sw ${c.cls}"></span>${c.label}: ${fmtInt(n)} (${pct.toFixed(1)}%)</span>`;
+      const b = r[c.bkey] || 0;
+      return `<span class="lg" title="${escapeHTML(`${c.label}: ${fmtInt(n)} req · ${fmtBytes(b)}`)}"><span class="sw ${c.cls}"></span>${c.label}: ${fmtInt(n)} req · ${fmtBytes(b)}</span>`;
     }).join('') + `<span class="flagged">${fmtInt(r.flagged_ips || 0)} attacker IPs flagged</span>`;
   } catch (e) { console.error('classification:', e); }
 }

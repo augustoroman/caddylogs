@@ -151,32 +151,33 @@ func (s *Store) PromoteFlaggedIPs(ctx context.Context, ips map[string]string) (i
 }
 
 // ClassificationCounts returns the six-cell breakdown used by the dashboard
-// header strip: hits in {real, bot, malicious} × {static, dynamic}. "real"
-// means is_bot=0; "bot" means is_bot=1; "malicious" is everything in
-// requests_malicious regardless of bot flag.
+// header strip: hits and bytes in {real, bot, malicious} × {static, dynamic}.
+// "real" means is_bot=0; "bot" means is_bot=1; "malicious" is everything
+// in requests_malicious regardless of bot flag.
 type ClassificationCounts struct {
-	RealStatic      int64 `json:"real_static"`
-	RealDynamic     int64 `json:"real_dynamic"`
-	BotStatic       int64 `json:"bot_static"`
-	BotDynamic      int64 `json:"bot_dynamic"`
-	MaliciousStatic int64 `json:"malicious_static"`
-	MaliciousDoc    int64 `json:"malicious_dynamic"`
-	FlaggedIPs      int64 `json:"flagged_ips"`
+	RealStatic           int64 `json:"real_static"`
+	RealStaticBytes      int64 `json:"real_static_bytes"`
+	RealDynamic          int64 `json:"real_dynamic"`
+	RealDynamicBytes     int64 `json:"real_dynamic_bytes"`
+	BotStatic            int64 `json:"bot_static"`
+	BotStaticBytes       int64 `json:"bot_static_bytes"`
+	BotDynamic           int64 `json:"bot_dynamic"`
+	BotDynamicBytes      int64 `json:"bot_dynamic_bytes"`
+	MaliciousStatic      int64 `json:"malicious_static"`
+	MaliciousStaticBytes int64 `json:"malicious_static_bytes"`
+	MaliciousDoc         int64 `json:"malicious_dynamic"`
+	MaliciousDocBytes    int64 `json:"malicious_dynamic_bytes"`
+	FlaggedIPs           int64 `json:"flagged_ips"`
 }
 
-// Classification fans out six COUNT queries. Uses the supplied filter's
-// time range only (per-dim filters are meaningful to the individual
-// panels, not the whole-traffic breakdown).
+// Classification fans out six COUNT/SUM queries. Uses the supplied filter's
+// time range only (per-dim filters are meaningful to the individual panels,
+// not the whole-traffic breakdown).
 func (s *Store) Classification(ctx context.Context, timeFromNs, timeToNs int64) (*ClassificationCounts, error) {
 	tsClause, tsArgs := tsClauseFor(timeFromNs, timeToNs)
 	out := &ClassificationCounts{}
 
-	run := func(q string, args []any, dst *int64) error {
-		row := s.db.QueryRowContext(ctx, q, args...)
-		return row.Scan(dst)
-	}
-
-	q := func(table, extra string) string {
+	run := func(table, extra string, dstHits, dstBytes *int64) error {
 		w := tsClause
 		if extra != "" {
 			if w == "" {
@@ -185,25 +186,26 @@ func (s *Store) Classification(ctx context.Context, timeFromNs, timeToNs int64) 
 				w += " AND " + extra
 			}
 		}
-		return `SELECT COUNT(*) FROM ` + table + w
+		q := `SELECT COUNT(*), COALESCE(SUM(size),0) FROM ` + table + w
+		return s.db.QueryRowContext(ctx, q, tsArgs...).Scan(dstHits, dstBytes)
 	}
 
-	if err := run(q("requests_static", "is_bot=0"), tsArgs, &out.RealStatic); err != nil {
+	if err := run("requests_static", "is_bot=0", &out.RealStatic, &out.RealStaticBytes); err != nil {
 		return nil, err
 	}
-	if err := run(q("requests_dynamic", "is_bot=0"), tsArgs, &out.RealDynamic); err != nil {
+	if err := run("requests_dynamic", "is_bot=0", &out.RealDynamic, &out.RealDynamicBytes); err != nil {
 		return nil, err
 	}
-	if err := run(q("requests_static", "is_bot=1"), tsArgs, &out.BotStatic); err != nil {
+	if err := run("requests_static", "is_bot=1", &out.BotStatic, &out.BotStaticBytes); err != nil {
 		return nil, err
 	}
-	if err := run(q("requests_dynamic", "is_bot=1"), tsArgs, &out.BotDynamic); err != nil {
+	if err := run("requests_dynamic", "is_bot=1", &out.BotDynamic, &out.BotDynamicBytes); err != nil {
 		return nil, err
 	}
-	if err := run(q("requests_malicious", "is_static=1"), tsArgs, &out.MaliciousStatic); err != nil {
+	if err := run("requests_malicious", "is_static=1", &out.MaliciousStatic, &out.MaliciousStaticBytes); err != nil {
 		return nil, err
 	}
-	if err := run(q("requests_malicious", "is_static=0"), tsArgs, &out.MaliciousDoc); err != nil {
+	if err := run("requests_malicious", "is_static=0", &out.MaliciousDoc, &out.MaliciousDocBytes); err != nil {
 		return nil, err
 	}
 	// Count distinct flagged IPs.

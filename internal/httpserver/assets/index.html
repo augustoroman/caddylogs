@@ -19,7 +19,16 @@
 </header>
 
 <section id="breakdown" class="breakdown">
-  <div class="breakdown-bar" id="breakdown-bar"></div>
+  <div class="breakdown-row">
+    <span class="bd-label" title="share of requests">req</span>
+    <div class="breakdown-bar" id="bd-requests"></div>
+    <span class="bd-total" id="bd-requests-total"></span>
+  </div>
+  <div class="breakdown-row">
+    <span class="bd-label" title="share of bytes served">data</span>
+    <div class="breakdown-bar" id="bd-bytes"></div>
+    <span class="bd-total" id="bd-bytes-total"></span>
+  </div>
   <div class="breakdown-legend" id="breakdown-legend"></div>
 </section>
 

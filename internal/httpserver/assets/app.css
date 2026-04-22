@@ -84,7 +84,21 @@ a:hover { text-decoration: underline; }
   padding: 6px 16px 10px; border-bottom: 1px solid var(--border);
   background: var(--bg-raised);
 }
+.breakdown-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 3px;
+}
+.bd-label {
+  flex: 0 0 36px; text-align: right;
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.bd-total {
+  flex: 0 0 auto; min-width: 80px;
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  text-align: right;
+}
 .breakdown-bar {
+  flex: 1 1 auto;
   display: flex; height: 18px; border-radius: 4px; overflow: hidden;
   background: var(--border);
 }
