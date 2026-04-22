@@ -250,6 +250,9 @@ a:hover { text-decoration: underline; }
   -webkit-user-select: none;
 }
 #rows-table tr.row-clickable:hover { background: var(--bg-hover); }
+#rows-table tr.off-filter { opacity: 0.45; font-style: italic; }
+#rows-table tr.off-filter td:first-child { border-left: 2px solid var(--muted); padding-left: 4px; }
+#rows-table tr.off-filter:hover { opacity: 0.75; }
 .status-2 { color: var(--ok); }
 .status-3 { color: #c89a3a; }
 .status-4 { color: var(--warn); }

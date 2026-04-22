@@ -790,6 +790,89 @@ async function loadStatic() {
   btn.disabled = false;
 }
 
+// --- live-row filter matching ---
+// The live tail injects every non-static event into the Recent requests list
+// regardless of the view. These helpers reproduce the server-side filter
+// evaluation so we can mark (but still show) rows that wouldn't normally
+// appear under the current view. That keeps the live feed useful while
+// making it obvious when a new event doesn't actually match the current
+// filter/view.
+function statusClassOf(s) {
+  if (s >= 500) return '5xx';
+  if (s >= 400) return '4xx';
+  if (s >= 300) return '3xx';
+  if (s >= 200) return '2xx';
+  if (s >= 100) return '1xx';
+  return 'other';
+}
+function rowTable(r) {
+  if (r.malicious_reason) return 'malicious';
+  if (r.is_static) return 'static';
+  return 'dynamic';
+}
+function dimValOfRow(dim, r) {
+  switch (dim) {
+    case 'ip':               return r.ip;
+    case 'host':             return r.host;
+    case 'uri':              return r.uri;
+    case 'status':           return String(r.status);
+    case 'status_class':     return statusClassOf(r.status);
+    case 'method':           return r.method;
+    case 'referer':          return r.referer;
+    case 'browser':          return r.browser;
+    case 'os':               return r.os;
+    case 'device':           return r.device;
+    case 'country':          return r.country;
+    case 'city':             return r.city;
+    case 'proto':            return r.proto;
+    case 'is_bot':           return r.is_bot ? 'true' : 'false';
+    case 'is_local':         return r.is_local ? 'true' : 'false';
+    case 'is_static':        return r.is_static ? 'true' : 'false';
+    case 'malicious_reason': return r.malicious_reason || '';
+  }
+  return undefined;
+}
+function matchesFilter(r, filter) {
+  if (filter.time_from && new Date(r.ts) < new Date(filter.time_from)) return false;
+  if (filter.time_to && new Date(r.ts) >= new Date(filter.time_to)) return false;
+  for (const [dim, vals] of Object.entries(filter.include || {})) {
+    if (!vals || !vals.length) continue;
+    const rv = dimValOfRow(dim, r);
+    if (rv === undefined) continue;
+    if (!vals.map(String).includes(String(rv))) return false;
+  }
+  for (const [dim, vals] of Object.entries(filter.exclude || {})) {
+    if (!vals || !vals.length) continue;
+    const rv = dimValOfRow(dim, r);
+    if (rv === undefined) continue;
+    if (vals.map(String).includes(String(rv))) return false;
+  }
+  return true;
+}
+// rowMatchesCurrentView returns true when r would be picked up by the
+// server-side query that populates the current view's rows panel. We
+// approximate the server's applyDefaults (exclude bots/local unless the
+// view or the user has opted in) since the client doesn't know the server
+// flags; this is correct for the default server config.
+function rowMatchesCurrentView(r) {
+  if (rowTable(r) !== viewTable(state.view)) return false;
+  const f = viewFilter(state.filter, state.view);
+  if (state.view !== 'malicious') {
+    f.exclude = f.exclude || {};
+    const incBot = (f.include && f.include.is_bot) || [];
+    const excBot = f.exclude.is_bot || [];
+    if (!incBot.includes('true') && !excBot.includes('true')) {
+      f.exclude.is_bot = [...excBot, 'true'];
+    }
+    const incLoc = (f.include && f.include.is_local) || [];
+    const excLoc = f.exclude.is_local || [];
+    if (!incLoc.includes('true') && !excLoc.includes('true')) {
+      f.exclude.is_local = [...excLoc, 'true'];
+    }
+  }
+  return matchesFilter(r, f);
+}
+
 // --- manual IP tagging ---
 // A manual tag pins an IP to one of {real, local, bot, malicious}. The server
 // rewrites existing rows in the store and teaches the classifier so every
@@ -883,12 +966,18 @@ function openWS() {
       const msg = JSON.parse(ev.data);
       if (msg.type === 'event') {
         flashLive();
-        // Prepend into rows if it matches current filter (best-effort;
-        // exclusions/time-range aren't fully replayed client-side).
+        // Prepend into rows. Rows that wouldn't match the current view's
+        // filtered query get an off-filter class so it's obvious they are
+        // not part of what the panels are summarizing.
         const body = document.getElementById('rows-body');
         const tr = document.createElement('tr');
-        tr.className = 'row-clickable';
         const r = msg.row;
+        const matches = rowMatchesCurrentView(r);
+        tr.className = 'row-clickable' + (matches ? '' : ' off-filter');
+        if (!matches) {
+          tr.setAttribute('title',
+            `live event outside the current ${state.view} view (${rowTable(r)})`);
+        }
         const ua = r.browser && r.os ? `${r.browser} / ${r.os}` : (r.user_agent || '');
         const dur = Math.round((r.duration || 0) / 1e6);
         tr.innerHTML = `
