@@ -18,6 +18,8 @@ HEAD-only liveness checks, HTTP/1.0-only clients), and operators can
 manually tag any IP from the dashboard with overrides that survive
 cache rebuilds.
 
+> **Note:** this app has been entirely vibe coded.
+
 ## Build
 
 ```
