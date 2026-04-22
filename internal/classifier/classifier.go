@@ -70,12 +70,19 @@ type Info struct {
 }
 
 // BuiltIn returns the set of classifiers that ship with caddylogs. New
-// rules added to the binary register here. User-defined classifiers
-// (e.g. SQL-template ones) would be registered at serve-time alongside
-// these.
+// rules added to the binary register here. Order matters: when two
+// classifiers' candidate sets overlap (they often do — root-only-burst
+// ⊂ no-static-ever), the first to claim an IP keeps it and later
+// classifiers see it in their Skipped bucket. Registering specific
+// rules before general ones gives overlapping IPs the most
+// informative tag.
 func BuiltIn() []Classifier {
 	return []Classifier{
-		NewRootOnly(),
+		NewRootOnly(),       // "/" + no static + burst/revisit
+		NewCadencePolling(), // regular inter-request timing
+		NewHeadOnly(),       // all HEAD
+		NewHTTP10Only(),     // all HTTP/1.0
+		NewNoStaticEver(),   // generalization: any URIs, no static
 	}
 }
 
