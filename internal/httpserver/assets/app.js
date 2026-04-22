@@ -303,7 +303,14 @@ function renderTimeline(buckets) {
     const x = clientX - r.left;
     return Math.max(0, Math.min(buckets.length - 1, Math.floor((x / r.width) * buckets.length)));
   };
-  svg.addEventListener('mousedown', (e) => {
+  // Use .onmousedown= (not addEventListener) because renderTimeline
+  // runs on every refreshAll and the <svg> element is the same static
+  // node every time. addEventListener would stack a fresh handler per
+  // render; a single mousedown would then fire N handlers, each
+  // appending its own semi-transparent brush rect on top of the
+  // others — the "blurry blocks" effect. Assignment replaces the
+  // prior handler so exactly one brush is ever drawn.
+  svg.onmousedown = (e) => {
     e.preventDefault(); // avoid accidental text selection
     const start = toBucketIdx(e.clientX);
     const brushEl = document.createElementNS(ns, 'rect');
@@ -339,7 +346,7 @@ function renderTimeline(buckets) {
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
-  });
+  };
 }
 
 const DYNAMIC_PANELS = [
