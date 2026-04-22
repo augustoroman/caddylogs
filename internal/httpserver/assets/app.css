@@ -335,6 +335,13 @@ a:hover { text-decoration: underline; }
 .tag-badge.tag-malicious { background: var(--err); color: #1a0707; }
 #tags-section code { background: var(--bg); padding: 0 4px; border-radius: 3px; }
 #tags-table .tag-source { font-size: 11px; color: var(--muted); }
+.tags-title { cursor: pointer; user-select: none; -webkit-user-select: none; }
+.tags-title:hover { color: var(--accent); }
+.tags-title .collapse-arrow {
+  font-family: var(--mono); color: var(--muted);
+  display: inline-block; transition: transform 0.15s ease;
+}
+.tags-title.expanded .collapse-arrow { transform: rotate(90deg); }
 
 #classifiers-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 #classifiers-table th, #classifiers-table td {
