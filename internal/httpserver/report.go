@@ -97,18 +97,19 @@ func RenderReport(ctx context.Context, store backend.Store, defaults DefaultFilt
 // --- template data shaping ---
 
 type reportData struct {
-	GeneratedAt         string
-	Inputs              string
-	Version             string
-	CSS                 template.CSS
-	Overview            overviewView
-	Static              *overviewView
-	StatusBars          []statusBar
-	TimelineBars        []timelineBar
-	Panels              []panelView
-	StaticPanels        []panelView
-	IncludeFilterLines  []filterLine
-	ExcludeFilterLines  []filterLine
+	GeneratedAt        string
+	Inputs             string
+	Version            string
+	CSS                template.CSS
+	Overview           overviewView
+	Static             *overviewView
+	StatusBars         []statusBar
+	TimelineBars       []timelineBar
+	TimelineTicks      []timelineTick
+	Panels             []panelView
+	StaticPanels       []panelView
+	IncludeFilterLines []filterLine
+	ExcludeFilterLines []filterLine
 }
 
 type overviewView struct {
@@ -123,6 +124,12 @@ type statusBar struct {
 type timelineBar struct {
 	X, Y, W, H float64
 	Title      string
+}
+type timelineTick struct {
+	X, Y           float64 // tick mark top point (bottom extends +4)
+	LabelX, LabelY float64
+	Anchor         string
+	Text           string
 }
 type panelView struct {
 	Title, Dim string
@@ -161,9 +168,10 @@ func buildReportData(dyn, stat *DashboardResponse, opts ReportOptions, css strin
 		Inputs:      strings.Join(opts.Inputs, " "),
 		Version:     opts.Version,
 		CSS:         template.CSS(css),
-		Overview:    overviewViewFrom(dyn.Overview),
-		StatusBars:  buildStatusBars(dyn.StatusClass),
-		TimelineBars: buildTimelineBars(dyn.Timeline),
+		Overview:      overviewViewFrom(dyn.Overview),
+		StatusBars:    buildStatusBars(dyn.StatusClass),
+		TimelineBars:  buildTimelineBars(dyn.Timeline),
+		TimelineTicks: buildTimelineTicks(dyn.Timeline),
 	}
 	for _, p := range dashboardPanels {
 		rows := dyn.Panels[p.Name]
@@ -284,18 +292,81 @@ func buildTimelineBars(buckets []backend.Bucket) []timelineBar {
 		}
 	}
 	barW := 1000.0 / float64(len(buckets))
+	// Bars draw within the top strip (0..156), leaving 24px of axis below.
+	const chartH = 156.0
 	out := make([]timelineBar, 0, len(buckets))
 	for i, b := range buckets {
 		h := 0.0
 		if maxHits > 0 {
-			h = float64(b.Hits) / float64(maxHits) * 140
+			h = float64(b.Hits) / float64(maxHits) * (chartH - 4)
 		}
 		out = append(out, timelineBar{
-			X: float64(i) * barW, Y: 160 - h, W: barW - 0.5, H: h,
+			X: float64(i) * barW, Y: chartH - h, W: barW - 0.5, H: h,
 			Title: fmt.Sprintf("%s: %s hits", b.Start.Format("2006-01-02 15:04"), fmtInt(b.Hits)),
 		})
 	}
 	return out
+}
+
+// buildTimelineTicks picks ~6 evenly-spaced tick indices from buckets and
+// formats their labels according to the total span, so the axis never shows
+// "Apr 22" at every tick when the span is a few hours or "14:32" everywhere
+// when the span is months.
+func buildTimelineTicks(buckets []backend.Bucket) []timelineTick {
+	n := len(buckets)
+	if n == 0 {
+		return nil
+	}
+	const chartH = 156.0
+	barW := 1000.0 / float64(n)
+	target := 6
+	if n < target {
+		target = n
+	}
+	spanNs := buckets[n-1].Start.Sub(buckets[0].Start)
+	fmtFn := pickReportTickFormat(spanNs)
+	out := make([]timelineTick, 0, target)
+	for k := 0; k < target; k++ {
+		idx := 0
+		if target > 1 {
+			idx = int(float64(k) * float64(n-1) / float64(target-1))
+		}
+		bx := float64(idx)*barW + barW/2
+		anchor := "middle"
+		lx := bx
+		switch {
+		case k == 0:
+			anchor = "start"
+			lx = 2
+		case k == target-1:
+			anchor = "end"
+			lx = 998
+		}
+		out = append(out, timelineTick{
+			X:      bx,
+			Y:      chartH,
+			LabelX: lx,
+			LabelY: chartH + 15,
+			Anchor: anchor,
+			Text:   fmtFn(buckets[idx].Start),
+		})
+	}
+	return out
+}
+
+func pickReportTickFormat(span time.Duration) func(t time.Time) string {
+	switch {
+	case span < 2*time.Hour:
+		return func(t time.Time) string { return t.Format("15:04:05Z") }
+	case span < 36*time.Hour:
+		return func(t time.Time) string { return t.Format("15:04Z") }
+	case span < 10*24*time.Hour:
+		return func(t time.Time) string { return t.Format("Jan 2 15:04") }
+	case span < 2*365*24*time.Hour:
+		return func(t time.Time) string { return t.Format("Jan 2") }
+	default:
+		return func(t time.Time) string { return t.Format("2006-01-02") }
+	}
 }
 
 func fmtInt(n int64) string {

@@ -28,6 +28,31 @@ function fmtTs(tsStr) {
   const d = new Date(tsStr);
   return d.toISOString().replace('T', ' ').slice(0, 19);
 }
+
+// pickTimelineFormat returns a Date -> string formatter whose granularity
+// matches the total span so labels stay informative without being redundant.
+function pickTimelineFormat(spanMs) {
+  const pad2 = n => (n < 10 ? '0' : '') + n;
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  if (spanMs < 2 * 60 * 60 * 1000) {
+    // < 2h: HH:MM:SS
+    return d => pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ':' + pad2(d.getUTCSeconds()) + 'Z';
+  }
+  if (spanMs < 36 * 60 * 60 * 1000) {
+    // < 36h: HH:MM
+    return d => pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + 'Z';
+  }
+  if (spanMs < 10 * 24 * 60 * 60 * 1000) {
+    // < 10d: "Apr 22 14:00"
+    return d => MONTHS[d.getUTCMonth()] + ' ' + d.getUTCDate() + ' ' + pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes());
+  }
+  if (spanMs < 2 * 365 * 24 * 60 * 60 * 1000) {
+    // < 2y: "Apr 22"
+    return d => MONTHS[d.getUTCMonth()] + ' ' + d.getUTCDate();
+  }
+  // multi-year
+  return d => d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate());
+}
 function statusClass(n) {
   if (n >= 500) return 'status-5';
   if (n >= 400) return 'status-4';
@@ -156,7 +181,9 @@ function renderStatusClass(sc) {
 function renderTimeline(buckets) {
   const svg = document.getElementById('timeline-chart');
   const w = svg.clientWidth || 800;
-  const h = 160;
+  const h = 180;           // total svg height
+  const chartH = 156;      // bar drawing area (top)
+  const axisH = 24;        // axis strip (bottom 24px for ticks + labels)
   svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
   svg.innerHTML = '';
   if (!buckets || buckets.length === 0) return;
@@ -165,17 +192,55 @@ function renderTimeline(buckets) {
   const ns = 'http://www.w3.org/2000/svg';
   buckets.forEach((b, i) => {
     const x = i * barW;
-    const bh = (b.hits / maxHits) * (h - 20);
+    const bh = (b.hits / maxHits) * (chartH - 4);
     const rect = document.createElementNS(ns, 'rect');
     rect.setAttribute('class', 'tl-bar');
     rect.setAttribute('x', x.toFixed(2));
-    rect.setAttribute('y', (h - bh).toFixed(2));
+    rect.setAttribute('y', (chartH - bh).toFixed(2));
     rect.setAttribute('width', Math.max(1, barW - 1).toFixed(2));
     rect.setAttribute('height', bh.toFixed(2));
     const t = document.createElementNS(ns, 'title');
     t.textContent = `${fmtTs(b.start)}: ${fmtInt(b.hits)} hits, ${fmtInt(b.visitors)} visitors`;
     rect.appendChild(t);
     svg.appendChild(rect);
+  });
+
+  // Axis baseline + date ticks.
+  const axis = document.createElementNS(ns, 'line');
+  axis.setAttribute('class', 'tl-axis');
+  axis.setAttribute('x1', 0); axis.setAttribute('x2', w);
+  axis.setAttribute('y1', chartH); axis.setAttribute('y2', chartH);
+  svg.appendChild(axis);
+
+  const spanMs = (new Date(buckets[buckets.length - 1].start) - new Date(buckets[0].start)) || 1;
+  const fmt = pickTimelineFormat(spanMs);
+  // Aim for roughly one label per ~130 logical px, min 2, max 8.
+  const targetTicks = Math.min(8, Math.max(2, Math.floor(w / 130)));
+  const tickCount = Math.min(targetTicks, buckets.length);
+  const indices = [];
+  for (let k = 0; k < tickCount; k++) {
+    const idx = tickCount === 1 ? 0 : Math.round(k * (buckets.length - 1) / (tickCount - 1));
+    if (indices.length === 0 || indices[indices.length - 1] !== idx) indices.push(idx);
+  }
+  indices.forEach((i, k) => {
+    const bx = i * barW + barW / 2;
+    const tick = document.createElementNS(ns, 'line');
+    tick.setAttribute('class', 'tl-tick');
+    tick.setAttribute('x1', bx); tick.setAttribute('x2', bx);
+    tick.setAttribute('y1', chartH); tick.setAttribute('y2', chartH + 4);
+    svg.appendChild(tick);
+    const label = document.createElementNS(ns, 'text');
+    label.setAttribute('class', 'tl-label');
+    // Keep first/last labels inside the viewport so they aren't clipped.
+    let anchor = 'middle';
+    if (k === 0) anchor = 'start';
+    else if (k === indices.length - 1) anchor = 'end';
+    label.setAttribute('text-anchor', anchor);
+    const lx = anchor === 'start' ? 2 : anchor === 'end' ? w - 2 : bx;
+    label.setAttribute('x', lx);
+    label.setAttribute('y', chartH + 15);
+    label.textContent = fmt(new Date(buckets[i].start));
+    svg.appendChild(label);
   });
   // Brush overlay for range selection. Once the mousedown fires we install
   // mousemove/mouseup listeners on the document so the drag follows the
@@ -193,7 +258,7 @@ function renderTimeline(buckets) {
     const brushEl = document.createElementNS(ns, 'rect');
     brushEl.setAttribute('class', 'tl-brush');
     brushEl.setAttribute('y', 0);
-    brushEl.setAttribute('height', h);
+    brushEl.setAttribute('height', chartH); // stay out of the axis strip
     svg.appendChild(brushEl);
 
     const onMove = (ev) => {

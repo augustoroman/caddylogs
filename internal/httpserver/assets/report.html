@@ -30,8 +30,10 @@
 
 <section class="panel">
   <div class="panel-title">Timeline</div>
-  <svg id="timeline-chart" preserveAspectRatio="none" viewBox="0 0 1000 160">
+  <svg id="timeline-chart" preserveAspectRatio="none" viewBox="0 0 1000 180">
     {{range .TimelineBars}}<rect class="tl-bar" x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}"><title>{{.Title}}</title></rect>{{end}}
+    <line class="tl-axis" x1="0" x2="1000" y1="156" y2="156"/>
+    {{range .TimelineTicks}}<line class="tl-tick" x1="{{.X}}" x2="{{.X}}" y1="156" y2="160"/><text class="tl-label" x="{{.LabelX}}" y="{{.LabelY}}" text-anchor="{{.Anchor}}">{{.Text}}</text>{{end}}
   </svg>
 </section>
 
