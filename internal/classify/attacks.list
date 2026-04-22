@@ -1,0 +1,104 @@
+# Default attack-URI patterns for caddylogs.
+#
+# One pattern per line. Blank lines and lines starting with `#` are ignored.
+# A line beginning with `re:` is treated as a regex. Optional `reason=` prefix
+# picks a human-readable label shown in the dashboard.
+#
+# Patterns are matched case-insensitively as substrings against the request
+# URI (path + querystring).
+
+# --- WordPress scan targets ---
+wordpress=wp-login.php
+wordpress=wp-admin/
+wordpress=wp-content/
+wordpress=wp-includes/
+wordpress=xmlrpc.php
+wordpress=wp-config
+wordpress=wlwmanifest.xml
+
+# --- Environment & config file fishing ---
+env-file=/.env
+git-dir=/.git/
+aws-creds=/.aws/
+ssh-dir=/.ssh/
+docker-cfg=/.docker/
+config-file=/config.json
+config-file=/config.php
+config-file=/config.yml
+config-file=/settings.php
+
+# --- Admin panels ---
+phpmyadmin=/phpmyadmin
+phpmyadmin=/pma/
+phpmyadmin=/myadmin
+phpmyadmin=/dbadmin
+adminer=/adminer
+adminer=adminer.php
+cpanel=/cpanel
+plesk=/plesk
+
+# --- Server info leaks ---
+server-info=server-status
+server-info=server-info
+server-info=/info.php
+server-info=/phpinfo
+actuator=/actuator/env
+actuator=/actuator/heapdump
+actuator=/actuator/mappings
+
+# --- Web shells ---
+webshell=/shell.php
+webshell=/c99.php
+webshell=/r57.php
+webshell=/alfa.php
+webshell=/cmd.php
+webshell=/wso.php
+webshell=/up.php
+
+# --- Router / IoT exploits ---
+router=/boaform
+router=/hnap1
+router=/setup.cgi
+router=/GponForm
+router=/goform/
+router=/admin/formLogin
+
+# --- Exchange / OWA ---
+exchange=/owa/
+exchange=/ecp/
+exchange=/autodiscover
+exchange=/ews/exchange.asmx
+
+# --- Cloud metadata ---
+cloud-metadata=/latest/meta-data
+cloud-metadata=/metadata/identity
+cloud-metadata=/computeMetadata/
+
+# --- Backup & DB dumps ---
+backup=/backup.zip
+backup=/backup.sql
+backup=/backup.tar
+backup=/dump.sql
+backup=/database.sql
+backup=/db.sql
+
+# --- CMS/app scan targets ---
+solr=/solr/
+jenkins=/jenkins/
+joomla=/administrator/index.php
+drupal=/user/register
+magento=/downloader
+
+# --- Env leaks via regex ---
+re: env-file-any=/\.env($|\.|/)
+re: dotfile=/\.[a-z_]+/config
+re: traversal=(\.\.|%2e%2e)(/|\\\\|%2f|%5c)
+
+# --- Misc well-known probe paths ---
+probe=/robots.txt.bak
+probe=/.htaccess
+probe=/.htpasswd
+probe=/wordpress/
+probe=/old/
+probe=/test/
+probe=/bak/
