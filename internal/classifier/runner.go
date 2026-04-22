@@ -53,7 +53,16 @@ func NewRunner(store *sqlitestore.Store, tags *classify.ManualTagSet) *Runner {
 // a subsequent run will re-apply the remainder.
 func (r *Runner) Run(ctx context.Context, c Classifier) (*RunResult, error) {
 	start := time.Now()
-	decisions, err := c.Run(ctx, r.store.DB())
+
+	prev := r.tags.ListBySource(c.Name())
+	prevByIP := make(map[string]classify.ManualTagListEntry, len(prev))
+	claimed := make([]string, 0, len(prev))
+	for _, e := range prev {
+		prevByIP[e.IP] = e
+		claimed = append(claimed, e.IP)
+	}
+
+	decisions, err := c.Run(ctx, RunEnv{DB: r.store.DB(), Claimed: claimed})
 	if err != nil {
 		return nil, err
 	}
@@ -61,12 +70,6 @@ func (r *Runner) Run(ctx context.Context, c Classifier) (*RunResult, error) {
 	newByIP := make(map[string]Decision, len(decisions))
 	for _, d := range decisions {
 		newByIP[d.IP] = d
-	}
-
-	prev := r.tags.ListBySource(c.Name())
-	prevByIP := make(map[string]classify.ManualTagListEntry, len(prev))
-	for _, e := range prev {
-		prevByIP[e.IP] = e
 	}
 
 	manual := r.tags.ListBySource(classify.SourceManual)
