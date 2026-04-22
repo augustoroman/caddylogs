@@ -32,9 +32,14 @@ function fmtTs(tsStr) {
 
 // pickTimelineFormat returns a Date -> string formatter whose granularity
 // matches the total span so labels stay informative without being redundant.
+// Dates outside the current UTC year are suffixed with " YYYY" so a range
+// that straddles a year boundary stays unambiguous.
 function pickTimelineFormat(spanMs) {
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const currentYear = new Date().getUTCFullYear();
+  const withYear = (d, base) =>
+    d.getUTCFullYear() === currentYear ? base : base + ' ' + d.getUTCFullYear();
   if (spanMs < 2 * 60 * 60 * 1000) {
     // < 2h: HH:MM:SS
     return d => pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ':' + pad2(d.getUTCSeconds()) + 'Z';
@@ -45,11 +50,11 @@ function pickTimelineFormat(spanMs) {
   }
   if (spanMs < 10 * 24 * 60 * 60 * 1000) {
     // < 10d: "Apr 22 14:00"
-    return d => MONTHS[d.getUTCMonth()] + ' ' + d.getUTCDate() + ' ' + pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes());
+    return d => withYear(d, MONTHS[d.getUTCMonth()] + ' ' + d.getUTCDate() + ' ' + pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()));
   }
   if (spanMs < 2 * 365 * 24 * 60 * 60 * 1000) {
     // < 2y: "Apr 22"
-    return d => MONTHS[d.getUTCMonth()] + ' ' + d.getUTCDate();
+    return d => withYear(d, MONTHS[d.getUTCMonth()] + ' ' + d.getUTCDate());
   }
   // multi-year
   return d => d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate());
