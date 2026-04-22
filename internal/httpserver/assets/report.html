@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>caddylogs report - {{.GeneratedAt}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>{{.CSS}}</style>
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">caddylogs report</div>
+  <div class="status">generated {{.GeneratedAt}} · {{.Inputs}}</div>
+</header>
+
+{{if or .IncludeFilterLines .ExcludeFilterLines}}
+<section id="filter-bar">
+  <div class="chips">
+    {{range .IncludeFilterLines}}<span class="chip"><span class="dim">{{.Dim}} =</span> <span class="val">{{.Val}}</span></span>{{end}}
+    {{range .ExcludeFilterLines}}<span class="chip excl"><span class="dim">{{.Dim}} ≠</span> <span class="val">{{.Val}}</span></span>{{end}}
+  </div>
+</section>
+{{end}}
+
+<section id="overview" class="overview">
+  <div class="stat"><div class="label">Hits</div><div class="value">{{.Overview.HitsFmt}}</div></div>
+  <div class="stat"><div class="label">Visitors</div><div class="value">{{.Overview.VisitorsFmt}}</div></div>
+  <div class="stat"><div class="label">Bandwidth</div><div class="value">{{.Overview.BytesFmt}}</div></div>
+  <div class="stat"><div class="label">Span</div><div class="value sub">{{.Overview.Span}}</div></div>
+</section>
+
+<section class="panel">
+  <div class="panel-title">Timeline</div>
+  <svg id="timeline-chart" preserveAspectRatio="none" viewBox="0 0 1000 160">
+    {{range .TimelineBars}}<rect class="tl-bar" x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}"><title>{{.Title}}</title></rect>{{end}}
+  </svg>
+</section>
+
+<section class="panel">
+  <div class="panel-title">Status</div>
+  <div class="status-bars">
+    {{range .StatusBars}}<div class="sb s{{.Class}}" style="flex:{{.Count}} {{.Count}} 0" title="{{.Class}}: {{.CountFmt}}">{{.Label}}</div>{{end}}
+  </div>
+</section>
+
+<section id="panels">
+{{range .Panels}}
+  <section class="panel">
+    <div class="panel-title">{{.Title}} <span class="muted">{{len .Rows}}</span></div>
+    <table class="panel-table">
+      <thead><tr><th>{{.Dim}}</th><th class="right">hits</th>{{if .HasMax}}<th class="right">max ms</th>{{end}}<th></th></tr></thead>
+      <tbody>
+        {{range .Rows}}
+        <tr>
+          <td class="key-cell" title="{{.Key}}">{{.KeyTrunc}}</td>
+          <td class="right">{{.HitsFmt}}</td>
+          {{if .ShowMax}}<td class="right">{{.MaxMs}}</td>{{end}}
+          <td class="bar-cell"><div class="bar" style="width:{{.BarPct}}%"></div></td>
+        </tr>
+        {{else}}
+        <tr><td colspan="3" class="panel-empty">no data</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+{{end}}
+</section>
+
+{{if .Static}}
+<section class="panel">
+  <div class="panel-title">Static asset overview</div>
+  <div class="hint">{{.Static.HitsFmt}} hits · {{.Static.VisitorsFmt}} visitors · {{.Static.BytesFmt}}</div>
+</section>
+{{range .StaticPanels}}
+  <section class="panel">
+    <div class="panel-title">{{.Title}} <span class="muted">{{len .Rows}}</span></div>
+    <table class="panel-table">
+      <tbody>
+        {{range .Rows}}
+        <tr>
+          <td class="key-cell" title="{{.Key}}">{{.KeyTrunc}}</td>
+          <td class="right">{{.HitsFmt}}</td>
+          <td class="right">{{.BytesFmt}}</td>
+          <td class="bar-cell"><div class="bar" style="width:{{.BarPct}}%"></div></td>
+        </tr>
+        {{else}}<tr><td class="panel-empty">no data</td></tr>{{end}}
+      </tbody>
+    </table>
+  </section>
+{{end}}
+{{end}}
+
+<footer class="hint" style="padding: 8px 16px;">
+  rendered by caddylogs {{.Version}} — static snapshot, no live updates
+</footer>
+</body>
+</html>

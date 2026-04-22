@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+
+	"github.com/augustoroman/caddylogs/internal/backend"
+	"github.com/augustoroman/caddylogs/internal/httpserver"
 )
 
-// runReport is the entry point for the "report" command. Static HTML
-// rendering is added in a follow-on commit; for now this validates ingestion
-// and flag wiring.
 func runReport(ctx context.Context, opts *reportFlags) error {
 	paths, err := expandPaths(opts.Paths)
 	if err != nil {
@@ -30,7 +30,23 @@ func runReport(ctx context.Context, opts *reportFlags) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "caddylogs: ingest complete; report rendering not yet wired up.\n")
-	fmt.Fprintf(os.Stderr, "caddylogs: would write %s\n", opts.Out)
-	return nil
+	f, err := os.Create(opts.Out)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintf(os.Stderr, "caddylogs: rendering report to %s\n", opts.Out)
+	return httpserver.RenderReport(ctx, store,
+		httpserver.DefaultFilter{
+			ExcludeBots:  !opts.IncludeBots,
+			ExcludeLocal: !opts.IncludeLocal,
+		},
+		f, httpserver.ReportOptions{
+			Inputs:        paths,
+			Filter:        backend.Filter{},
+			TopN:          10,
+			IncludeStatic: true,
+			Version:       "0.1.0-dev",
+		})
 }
