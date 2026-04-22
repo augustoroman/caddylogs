@@ -95,6 +95,19 @@ func TestManualTag_MovesRows(t *testing.T) {
 		t.Errorf("persisted tag: got %v, want %v", seen["8.8.8.8"], classify.ManualTagReal)
 	}
 
+	// Contains filter: substring match via SQL LIKE. Should find the
+	// /b.css row by "b.c" but exclude rows where uri is "/a" or "/c".
+	r2, err := store.Query(ctx, backend.Query{
+		Table: backend.TableStatic, Kind: backend.KindRows, Limit: 10,
+		Filter: backend.Filter{Contains: map[backend.Dimension][]string{backend.DimURI: {"b.c"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r2.Rows) != 1 || r2.Rows[0].URI != "/b.css" {
+		t.Errorf("contains filter: got %+v, want single /b.css", r2.Rows)
+	}
+
 	// Tag as bot → flags should flip on existing rows.
 	if err := store.ApplyManualTag(ctx, "1.1.1.1", classify.ManualTagBot); err != nil {
 		t.Fatal(err)

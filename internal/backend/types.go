@@ -31,10 +31,13 @@ const (
 
 // Filter expresses the active drill-down state. Include[d] values are OR'd
 // within the dimension; dimensions AND together. Exclude[d] removes matches
-// (AND NOT across dims).
+// (AND NOT across dims). Contains[d] is substring match (SQL LIKE '%v%') —
+// useful for free-text inputs like "show me URIs containing /dl/" where
+// exact-match IN clauses can't express the intent.
 type Filter struct {
 	Include  map[Dimension][]string `json:"include,omitempty"`
 	Exclude  map[Dimension][]string `json:"exclude,omitempty"`
+	Contains map[Dimension][]string `json:"contains,omitempty"`
 	TimeFrom time.Time              `json:"time_from,omitempty"`
 	TimeTo   time.Time              `json:"time_to,omitempty"`
 }

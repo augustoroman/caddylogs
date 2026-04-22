@@ -1,7 +1,7 @@
 // caddylogs dashboard — single-file vanilla JS.
 
 const state = {
-  filter: { include: {}, exclude: {}, time_from: null, time_to: null },
+  filter: { include: {}, exclude: {}, contains: {}, time_from: null, time_to: null },
   topN: 10,
   rowsOffset: 0,
   rowsBuffer: [], // live events appended client-side between refreshes
@@ -79,6 +79,7 @@ function deepCopyFilter(f) {
   return {
     include: Object.fromEntries(Object.entries(f.include || {}).map(([k, v]) => [k, [...v]])),
     exclude: Object.fromEntries(Object.entries(f.exclude || {}).map(([k, v]) => [k, [...v]])),
+    contains: Object.fromEntries(Object.entries(f.contains || {}).map(([k, v]) => [k, [...v]])),
     time_from: f.time_from,
     time_to: f.time_to,
   };
@@ -94,19 +95,22 @@ const PRETTY_DIM = {
 function renderChips() {
   const c = document.getElementById('chips');
   c.innerHTML = '';
-  const add = (dim, val, excl) => {
+  const add = (dim, val, kind) => {
     const el = document.createElement('span');
-    el.className = 'chip' + (excl ? ' excl' : '');
-    el.innerHTML = `<span class="dim">${escapeHTML(PRETTY_DIM[dim] || dim)}${excl ? ' ≠' : ' ='}</span>
+    const excl = kind === 'exclude';
+    const contains = kind === 'contains';
+    el.className = 'chip' + (excl ? ' excl' : '') + (contains ? ' contains' : '');
+    const op = excl ? ' ≠' : contains ? ' ∋' : ' =';
+    el.innerHTML = `<span class="dim">${escapeHTML(PRETTY_DIM[dim] || dim)}${op}</span>
                     <span class="val">${escapeHTML(truncate(String(val), 50))}</span>
                     <span class="x" title="Remove filter">×</span>`;
     el.querySelector('.x').addEventListener('click', () => {
-      const bucket = excl ? state.filter.exclude : state.filter.include;
+      const bucket = state.filter[kind === 'include' ? 'include' : kind];
       bucket[dim] = (bucket[dim] || []).filter(v => v !== val);
       if (bucket[dim].length === 0) delete bucket[dim];
       refreshAll();
     });
-    if (dim === 'ip' && !excl) {
+    if (dim === 'ip' && kind === 'include') {
       el.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         openTagMenu(String(val), e.clientX, e.clientY);
@@ -116,10 +120,13 @@ function renderChips() {
     c.appendChild(el);
   };
   for (const [dim, vals] of Object.entries(state.filter.include || {})) {
-    for (const v of vals) add(dim, v, false);
+    for (const v of vals) add(dim, v, 'include');
   }
   for (const [dim, vals] of Object.entries(state.filter.exclude || {})) {
-    for (const v of vals) add(dim, v, true);
+    for (const v of vals) add(dim, v, 'exclude');
+  }
+  for (const [dim, vals] of Object.entries(state.filter.contains || {})) {
+    for (const v of vals) add(dim, v, 'contains');
   }
   if (state.filter.time_from || state.filter.time_to) {
     const el = document.createElement('span');
@@ -149,6 +156,18 @@ function addFilter(dim, val, excl) {
     bucket[dim] = bucket[dim] || [];
     if (!bucket[dim].includes(val)) bucket[dim].push(val);
   }
+  refreshAll();
+}
+// addContainsFilter stages a substring (SQL LIKE '%v%') filter for a
+// dimension. Used by the free-text URL input; like addFilter it
+// refreshes the dashboard on change.
+function addContainsFilter(dim, val) {
+  val = String(val || '').trim();
+  if (!val) return;
+  state.filter.contains = state.filter.contains || {};
+  const bucket = state.filter.contains;
+  bucket[dim] = bucket[dim] || [];
+  if (!bucket[dim].includes(val)) bucket[dim].push(val);
   refreshAll();
 }
 
@@ -856,6 +875,14 @@ function matchesFilter(r, filter) {
     if (rv === undefined) continue;
     if (vals.map(String).includes(String(rv))) return false;
   }
+  for (const [dim, vals] of Object.entries(filter.contains || {})) {
+    if (!vals || !vals.length) continue;
+    const rv = dimValOfRow(dim, r);
+    if (rv === undefined) continue;
+    const rvStr = String(rv);
+    // OR within a dim: the row matches if any listed substring is found.
+    if (!vals.some(v => rvStr.includes(String(v)))) return false;
+  }
   return true;
 }
 // rowMatchesCurrentView returns true when r would be picked up by the
@@ -1164,9 +1191,35 @@ function openWS() {
 
 // --- wire up ---
 document.getElementById('clear-filters').addEventListener('click', () => {
-  state.filter = { include: {}, exclude: {}, time_from: null, time_to: null };
+  state.filter = { include: {}, exclude: {}, contains: {}, time_from: null, time_to: null };
+  const ipInput = document.getElementById('filter-ip');
+  const uriInput = document.getElementById('filter-uri');
+  if (ipInput) ipInput.value = '';
+  if (uriInput) uriInput.value = '';
   refreshAll();
 });
+// Free-text filter inputs. IP input does exact include, URI does
+// substring contains. Enter applies; blank values are ignored.
+const ipInputEl = document.getElementById('filter-ip');
+if (ipInputEl) {
+  ipInputEl.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const v = ipInputEl.value.trim();
+    if (!v) return;
+    addFilter('ip', v, false);
+    ipInputEl.value = '';
+  });
+}
+const uriInputEl = document.getElementById('filter-uri');
+if (uriInputEl) {
+  uriInputEl.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const v = uriInputEl.value.trim();
+    if (!v) return;
+    addContainsFilter('uri', v);
+    uriInputEl.value = '';
+  });
+}
 document.getElementById('load-static').addEventListener('click', loadStatic);
 document.getElementById('rows-more').addEventListener('click', loadMoreRows);
 document.querySelectorAll('.view-btn').forEach(btn => {

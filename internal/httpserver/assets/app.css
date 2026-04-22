@@ -58,6 +58,17 @@ a:hover { text-decoration: underline; }
   font-family: var(--mono);
 }
 .chip.excl { background: var(--chip-excl-bg); border-color: #6a2a32; }
+.chip.contains { background: #1e3630; border-color: #2d5448; }
+.filter-inputs { display: flex; gap: 6px; }
+.filter-input {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border);
+  padding: 3px 8px; border-radius: 12px; font-size: 11px;
+  font-family: var(--mono);
+  width: 180px;
+}
+.filter-input:focus { outline: none; border-color: var(--accent); }
+.filter-input::placeholder { color: var(--muted); }
 .chip .dim { color: var(--muted); }
 .chip .val { color: var(--text); }
 .chip .x {

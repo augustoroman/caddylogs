@@ -70,6 +70,28 @@ func buildWhere(f backend.Filter) (string, []any, error) {
 			args = append(args, mapFilterValue(dim, v))
 		}
 	}
+	for dim, vals := range f.Contains {
+		col := dimColumn(dim)
+		if col == "" {
+			return "", nil, fmt.Errorf("unknown dimension %q in contains", dim)
+		}
+		if len(vals) == 0 {
+			continue
+		}
+		// Each value yields a LIKE clause; multiple values within a
+		// single dimension OR together (same semantics as Include). The
+		// '\' escape lets a user-typed % or _ be matched literally.
+		var ors []string
+		for _, v := range vals {
+			ors = append(ors, quote(col)+" LIKE ? ESCAPE '\\'")
+			args = append(args, "%"+escapeLike(v)+"%")
+		}
+		if len(ors) == 1 {
+			clauses = append(clauses, ors[0])
+		} else {
+			clauses = append(clauses, "("+strings.Join(ors, " OR ")+")")
+		}
+	}
 	if !f.TimeFrom.IsZero() {
 		clauses = append(clauses, "ts >= ?")
 		args = append(args, f.TimeFrom.UnixNano())
@@ -95,6 +117,22 @@ func mapFilterValue(dim backend.Dimension, v string) any {
 		return 0
 	}
 	return v
+}
+
+// escapeLike quotes LIKE's two metacharacters (% and _) plus the
+// escape char itself so a user-typed pattern containing those
+// matches literally.
+func escapeLike(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\\', '%', '_':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func (s *Store) queryOverview(ctx context.Context, table, where string, args []any) (*backend.Result, error) {

@@ -377,6 +377,7 @@ func mergeFilters(base, extra backend.Filter) backend.Filter {
 	out := backend.Filter{
 		Include:  map[backend.Dimension][]string{},
 		Exclude:  map[backend.Dimension][]string{},
+		Contains: map[backend.Dimension][]string{},
 		TimeFrom: base.TimeFrom,
 		TimeTo:   base.TimeTo,
 	}
@@ -386,11 +387,17 @@ func mergeFilters(base, extra backend.Filter) backend.Filter {
 	for d, v := range base.Exclude {
 		out.Exclude[d] = append(out.Exclude[d], v...)
 	}
+	for d, v := range base.Contains {
+		out.Contains[d] = append(out.Contains[d], v...)
+	}
 	for d, v := range extra.Include {
 		out.Include[d] = append(out.Include[d], v...)
 	}
 	for d, v := range extra.Exclude {
 		out.Exclude[d] = append(out.Exclude[d], v...)
+	}
+	for d, v := range extra.Contains {
+		out.Contains[d] = append(out.Contains[d], v...)
 	}
 	if !extra.TimeFrom.IsZero() && (base.TimeFrom.IsZero() || extra.TimeFrom.After(base.TimeFrom)) {
 		out.TimeFrom = extra.TimeFrom
