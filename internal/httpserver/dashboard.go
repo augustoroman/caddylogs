@@ -14,10 +14,11 @@ import (
 // DashboardRequest is what the UI POSTs to /api/dashboard. Table defaults to
 // Dynamic; static-asset summaries live behind /api/static.
 type DashboardRequest struct {
-	Filter backend.Filter `json:"filter"`
-	Table  backend.Table  `json:"table,omitempty"`
-	TopN   int            `json:"topn,omitempty"`
-	Bucket time.Duration  `json:"bucket,omitempty"`
+	Filter  backend.Filter `json:"filter"`
+	Table   backend.Table  `json:"table,omitempty"`
+	TopN    int            `json:"topn,omitempty"`
+	Bucket  time.Duration  `json:"bucket,omitempty"`
+	OrderBy string         `json:"order_by,omitempty"` // "hits" (default), "bytes", "visitors"
 }
 
 // DashboardResponse is the parallel fanout of every dashboard panel plus the
@@ -199,9 +200,12 @@ func (s *Server) handlePanel(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = 25
 	}
-	order := req.OrderBy
+	// Panel-specific order wins (e.g. slow = max_dur) so the Slow panel
+	// keeps sorting by duration even when the global toggle is on
+	// "bytes" or "hits".
+	order := spec.Order
 	if order == "" {
-		order = spec.Order
+		order = req.OrderBy
 	}
 	filter := mergeFilters(req.Filter, spec.Extra)
 	res, err := s.store.Query(r.Context(), backend.Query{
@@ -336,13 +340,20 @@ func (s *Server) runDashboard(ctx context.Context, req DashboardRequest, panels 
 		p := p
 		track(p.Name, func(ctx context.Context) error {
 			filter := mergeFilters(req.Filter, p.Extra)
+			// Panel-specific order (e.g. slow requests always use max_dur)
+			// wins; otherwise fall back to the request-level order, then the
+			// backend default of "hits".
+			order := p.Order
+			if order == "" {
+				order = req.OrderBy
+			}
 			out, err := s.store.Query(ctx, backend.Query{
 				Table:   req.Table,
 				Kind:    backend.KindTopN,
 				Filter:  filter,
 				GroupBy: p.GroupBy,
 				Limit:   req.TopN,
-				OrderBy: p.Order,
+				OrderBy: order,
 			})
 			if err == nil {
 				mu.Lock()

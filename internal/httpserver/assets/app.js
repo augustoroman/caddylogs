@@ -6,7 +6,8 @@ const state = {
   rowsOffset: 0,
   rowsBuffer: [], // live events appended client-side between refreshes
   maxLiveRows: 200,
-  view: 'dynamic', // "dynamic" | "static" | "malicious"
+  view: 'dynamic',   // "dynamic" | "static" | "local" | "malicious"
+  sortBy: 'hits',    // "hits" | "bytes"
 };
 
 // --- helpers ---
@@ -326,6 +327,19 @@ function currentPanelDefs() {
 // PANEL_PAGE_SIZE governs how many rows "Show more" fetches per click.
 const PANEL_PAGE_SIZE = 25;
 
+// panelPrimary returns the object describing the primary metric column for
+// the current sort mode.
+function panelPrimary(def) {
+  // Slow panel always displays max_ms regardless of global sort.
+  if (def.extraCol === 'max_ms') {
+    return { label: 'max ms', get: r => r.max_ms, fmt: fmtDuration, barOf: r => r.max_ms };
+  }
+  if (state.sortBy === 'bytes') {
+    return { label: 'data', get: r => r.bytes, fmt: fmtBytes, barOf: r => r.bytes };
+  }
+  return { label: 'hits', get: r => r.hits, fmt: fmtInt, barOf: r => r.hits };
+}
+
 function renderPanels(panels) {
   const container = document.getElementById('panels');
   container.innerHTML = '';
@@ -335,9 +349,13 @@ function renderPanels(panels) {
     const sec = document.createElement('section');
     sec.className = 'panel';
     sec.dataset.panel = def.name;
-    const headers = def.extraCol === 'max_ms'
-      ? `<tr><th data-col="key">${escapeHTML(def.dim)}<span class="col-resize"></span></th><th data-col="hits" class="right">hits<span class="col-resize"></span></th><th data-col="max" class="right">max ms<span class="col-resize"></span></th><th data-col="bar"></th></tr>`
-      : `<tr><th data-col="key">${escapeHTML(def.dim)}<span class="col-resize"></span></th><th data-col="hits" class="right">hits<span class="col-resize"></span></th><th data-col="bar"></th></tr>`;
+    const prim = panelPrimary(def);
+    const headers =
+      `<tr>
+         <th data-col="key">${escapeHTML(def.dim)}<span class="col-resize"></span></th>
+         <th data-col="primary" class="right">${escapeHTML(prim.label)}<span class="col-resize"></span></th>
+         <th data-col="bar"></th>
+       </tr>`;
     sec.innerHTML = `
       <div class="panel-title">${escapeHTML(def.title)} <span class="muted panel-count">${initialRows.length}</span></div>
       <table class="panel-table" data-panel="${def.name}">
@@ -350,20 +368,18 @@ function renderPanels(panels) {
       </div>
     `;
     container.appendChild(sec);
-    // Per-panel paging state lives on the section DOM node so it survives
-    // rerenders of unrelated panels.
     sec._pg = {
-      rows: [],              // all rows loaded so far
-      offset: 0,             // next offset to fetch
-      exhausted: false,      // server returned a short page
-      initialLoaded: false,  // whether initialRows have been installed
+      rows: [],
+      offset: 0,
+      exhausted: false,
+      initialLoaded: false,
       def: def,
     };
     appendPanelRows(sec, initialRows);
     sec._pg.offset = initialRows.length;
     sec._pg.initialLoaded = true;
     if (initialRows.length < state.topN) {
-      sec._pg.exhausted = true; // dashboard fanout already returned fewer than topN -> no more
+      sec._pg.exhausted = true;
     }
     updatePanelFooter(sec);
 
@@ -377,40 +393,39 @@ function renderPanels(panels) {
 
 function appendPanelRows(sec, rows) {
   const def = sec._pg.def;
+  const prim = panelPrimary(def);
   const tbody = sec.querySelector('tbody');
   if (sec._pg.rows.length === 0 && rows.length === 0) {
-    const cols = def.extraCol === 'max_ms' ? 4 : 3;
-    tbody.innerHTML = `<tr><td colspan="${cols}" class="panel-empty">no data</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="3" class="panel-empty">no data</td></tr>`;
     return;
   }
   if (sec._pg.rows.length === 0) {
-    tbody.innerHTML = ''; // clear any "no data" placeholder
+    tbody.innerHTML = '';
   }
   sec._pg.rows = sec._pg.rows.concat(rows);
   // Recompute max over ALL rows loaded so bar widths stay comparable.
-  const maxHits = Math.max(...sec._pg.rows.map(r => r.hits || 0)) || 1;
-  // Rebuild bars on already-rendered rows proportionally (keeps scale honest
-  // when a late page has a larger hit value than earlier ones).
+  const maxPrim = Math.max(...sec._pg.rows.map(r => prim.barOf(r) || 0)) || 1;
+  // Rebuild bars on already-rendered rows proportionally.
   tbody.querySelectorAll('.bar').forEach((barEl, i) => {
     const row = sec._pg.rows[i];
     if (!row) return;
-    barEl.style.width = (((row.hits || 0) / maxHits) * 100).toFixed(1) + '%';
+    barEl.style.width = (((prim.barOf(row) || 0) / maxPrim) * 100).toFixed(1) + '%';
   });
   rows.forEach(r => {
     const tr = document.createElement('tr');
     tr.dataset.val = r.key || '(none)';
     tr.dataset.dim = def.dim;
     tr.setAttribute('title', 'click to filter, shift-click to exclude');
-    const barWidth = ((r.hits || 0) / maxHits) * 100;
-    const extra = def.extraCol === 'max_ms'
-      ? `<td class="right" title="max ${escapeHTML(fmtDuration(r.max_ms))}, avg ${escapeHTML(fmtDuration(r.avg_ms))}">${escapeHTML(fmtDuration(r.max_ms))}</td>`
-      : '';
+    const barWidth = ((prim.barOf(r) || 0) / maxPrim) * 100;
     const val = r.key || '(none)';
-    const hitsTip = `${fmtInt(r.hits)} hits · ${fmtInt(r.visitors)} visitors · ${fmtBytes(r.bytes)}`;
+    // Tooltip always shows both metrics so the toggle is informational
+    // rather than destructive.
+    const primVal = prim.fmt(prim.get(r));
+    const rowTip = `${fmtInt(r.hits)} hits · ${fmtInt(r.visitors)} visitors · ${fmtBytes(r.bytes)}` +
+      (def.extraCol === 'max_ms' ? ` · max ${fmtDuration(r.max_ms)} · avg ${fmtDuration(r.avg_ms)}` : '');
     tr.innerHTML = `
       <td class="key-cell" title="${escapeHTML(val)}">${escapeHTML(val)}</td>
-      <td class="right hits-cell" title="${escapeHTML(hitsTip)}">${fmtInt(r.hits)}</td>
-      ${extra}
+      <td class="right hits-cell" title="${escapeHTML(rowTip)}">${escapeHTML(primVal)}</td>
       <td class="bar-cell"><div class="bar" style="width:${barWidth.toFixed(1)}%"></div></td>`;
     tr.addEventListener('click', (e) => {
       if (e.target.closest('.col-resize')) return;
@@ -445,6 +460,7 @@ async function loadMorePanel(sec) {
       panel: sec._pg.def.name,
       offset: sec._pg.offset,
       limit: PANEL_PAGE_SIZE,
+      order_by: state.sortBy,
     };
     if (sec._pg.def.extraCol === 'max_ms') body.order_by = 'max_dur';
     const r = await postJSON('/api/panel', body);
@@ -632,7 +648,7 @@ async function refreshAll() {
   inflight = ac;
   const table = viewTable(state.view);
   const effectiveFilter = viewFilter(state.filter, state.view);
-  const body = { filter: effectiveFilter, topn: state.topN, table };
+  const body = { filter: effectiveFilter, topn: state.topN, table, order_by: state.sortBy };
   refreshBreakdown();
   try {
     const url = table === 'static' ? '/api/static' : '/api/dashboard';
@@ -655,6 +671,16 @@ async function refreshAll() {
     const rowsResp = await postJSON('/api/rows', { filter: effectiveFilter, table });
     renderRows(rowsResp.rows || [], false);
   } catch (e) { console.error('rows:', e); }
+}
+
+function setSort(s) {
+  if (!['hits', 'bytes'].includes(s)) return;
+  if (state.sortBy === s) return;
+  state.sortBy = s;
+  document.querySelectorAll('.sort-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.sort === s);
+  });
+  refreshAll();
 }
 
 function setView(v) {
@@ -786,6 +812,9 @@ document.getElementById('load-static').addEventListener('click', loadStatic);
 document.getElementById('rows-more').addEventListener('click', loadMoreRows);
 document.querySelectorAll('.view-btn').forEach(btn => {
   btn.addEventListener('click', () => setView(btn.dataset.view));
+});
+document.querySelectorAll('.sort-btn').forEach(btn => {
+  btn.addEventListener('click', () => setSort(btn.dataset.sort));
 });
 
 async function pollStatus() {

@@ -77,6 +77,11 @@ a:hover { text-decoration: underline; }
 
 .view-switch { display: flex; gap: 4px; }
 .view-btn.active { background: var(--accent); color: #0a1016; border-color: var(--accent); font-weight: 600; }
+
+.sort-switch { display: inline-flex; align-items: center; gap: 4px; }
+.sort-label { color: var(--muted); font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; }
+.sort-btn { padding: 2px 8px; font-size: 11px; }
+.sort-btn.active { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600; }
 .view-btn[data-view="malicious"].active { background: var(--err); border-color: var(--err); color: #1a0707; }
 .view-btn[data-view="static"].active    { background: var(--warn); border-color: var(--warn); color: #1a1000; }
 .view-btn[data-view="local"].active     { background: #7aa6e0; border-color: #7aa6e0; color: #0a1016; }
