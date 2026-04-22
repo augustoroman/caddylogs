@@ -177,46 +177,52 @@ function renderTimeline(buckets) {
     rect.appendChild(t);
     svg.appendChild(rect);
   });
-  // Brush overlay for range selection.
-  let brushStart = null, brushEl = null;
+  // Brush overlay for range selection. Once the mousedown fires we install
+  // mousemove/mouseup listeners on the document so the drag follows the
+  // cursor even when it leaves the SVG (which matters when the user wants
+  // to include the last, rightmost bucket). We clamp to SVG bounds so a
+  // drag past the right edge still commits "up to the most recent bucket".
   const toBucketIdx = (clientX) => {
     const r = svg.getBoundingClientRect();
     const x = clientX - r.left;
     return Math.max(0, Math.min(buckets.length - 1, Math.floor((x / r.width) * buckets.length)));
   };
   svg.addEventListener('mousedown', (e) => {
-    brushStart = toBucketIdx(e.clientX);
-    brushEl = document.createElementNS(ns, 'rect');
+    e.preventDefault(); // avoid accidental text selection
+    const start = toBucketIdx(e.clientX);
+    const brushEl = document.createElementNS(ns, 'rect');
     brushEl.setAttribute('class', 'tl-brush');
     brushEl.setAttribute('y', 0);
     brushEl.setAttribute('height', h);
     svg.appendChild(brushEl);
-  });
-  svg.addEventListener('mousemove', (e) => {
-    if (brushStart == null) return;
-    const cur = toBucketIdx(e.clientX);
-    const lo = Math.min(brushStart, cur);
-    const hi = Math.max(brushStart, cur);
-    brushEl.setAttribute('x', (lo * barW).toFixed(2));
-    brushEl.setAttribute('width', ((hi - lo + 1) * barW).toFixed(2));
-  });
-  svg.addEventListener('mouseup', (e) => {
-    if (brushStart == null) return;
-    const cur = toBucketIdx(e.clientX);
-    const lo = Math.min(brushStart, cur);
-    const hi = Math.max(brushStart, cur);
-    brushStart = null;
-    if (brushEl) { brushEl.remove(); brushEl = null; }
-    if (hi <= lo) return; // click, not drag
-    const bucketStart = buckets[lo].start;
-    const bucketEnd = buckets[Math.min(buckets.length - 1, hi + 1)]?.start || null;
-    state.filter.time_from = bucketStart;
-    state.filter.time_to = bucketEnd;
-    refreshAll();
-  });
-  svg.addEventListener('mouseleave', () => {
-    if (brushEl) { brushEl.remove(); brushEl = null; }
-    brushStart = null;
+
+    const onMove = (ev) => {
+      const cur = toBucketIdx(ev.clientX);
+      const lo = Math.min(start, cur);
+      const hi = Math.max(start, cur);
+      brushEl.setAttribute('x', (lo * barW).toFixed(2));
+      brushEl.setAttribute('width', ((hi - lo + 1) * barW).toFixed(2));
+    };
+    const onUp = (ev) => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      brushEl.remove();
+      const cur = toBucketIdx(ev.clientX);
+      const lo = Math.min(start, cur);
+      const hi = Math.max(start, cur);
+      if (hi <= lo) return; // click, not drag
+      const bucketStart = buckets[lo].start;
+      // If hi is the last bucket we leave time_to null so the query has
+      // no upper bound -- "all the way to now" survives further ingest.
+      const bucketEnd = hi >= buckets.length - 1
+        ? null
+        : (buckets[hi + 1]?.start || null);
+      state.filter.time_from = bucketStart;
+      state.filter.time_to = bucketEnd;
+      refreshAll();
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   });
 }
 
