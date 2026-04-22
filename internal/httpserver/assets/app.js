@@ -8,6 +8,11 @@ const state = {
   maxLiveRows: 200,
   view: 'dynamic',   // "dynamic" | "static" | "local" | "bots" | "malicious"
   sortBy: 'hits',    // "hits" | "bytes"
+  // Most-recent timestamp we've seen for the current view when no time
+  // filter is active. Used as the "now" reference for range presets so
+  // "last 7 days" means 7 days before the freshest row, not 7 days
+  // before wall-clock (which would be empty for historical logs).
+  globalLast: null,
 };
 
 // --- helpers ---
@@ -191,6 +196,12 @@ async function getJSON(url) {
 function renderOverview(ov) {
   const el = document.getElementById('overview');
   const span = ov.first && ov.last ? `${fmtTs(ov.first)} → ${fmtTs(ov.last)}` : '';
+  // When the user has no time filter active, overview.last reflects the
+  // full dataset's end; cache it so range presets can compute "last N
+  // days" relative to the freshest data rather than wall-clock.
+  if (ov.last && !state.filter.time_from && !state.filter.time_to) {
+    state.globalLast = ov.last;
+  }
   el.innerHTML = `
     <div class="stat"><div class="label">Hits</div><div class="value">${fmtInt(ov.hits)}</div></div>
     <div class="stat"><div class="label">Visitors</div><div class="value">${fmtInt(ov.visitors)}</div></div>
@@ -1220,6 +1231,28 @@ if (uriInputEl) {
     uriInputEl.value = '';
   });
 }
+
+// Timeline range presets. "N days back from the freshest known
+// timestamp" so historical logs don't end up with an empty window
+// when wall-clock has moved past the log's end. time_to stays null
+// so live-tail ingestion keeps appending inside the range.
+function applyRangePreset(days) {
+  if (!days || days <= 0) {
+    state.filter.time_from = null;
+    state.filter.time_to = null;
+  } else {
+    const refEnd = state.globalLast ? new Date(state.globalLast) : new Date();
+    const start = new Date(refEnd.getTime() - days * 86400000);
+    state.filter.time_from = start.toISOString();
+    state.filter.time_to = null;
+  }
+  refreshAll();
+}
+document.querySelectorAll('.range-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    applyRangePreset(parseInt(btn.dataset.days, 10) || 0);
+  });
+});
 document.getElementById('load-static').addEventListener('click', loadStatic);
 document.getElementById('rows-more').addEventListener('click', loadMoreRows);
 document.querySelectorAll('.view-btn').forEach(btn => {

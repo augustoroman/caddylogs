@@ -230,6 +230,11 @@ a:hover { text-decoration: underline; }
   width: 100%; height: 180px; display: block;
   background: #0a1016; border-radius: 6px;
 }
+.range-presets { display: inline-flex; gap: 4px; }
+.range-presets .range-btn {
+  padding: 2px 8px; font-size: 10px;
+  font-family: var(--mono); letter-spacing: 0.3px;
+}
 .tl-bar { fill: var(--accent); opacity: 0.6; }
 .tl-bar:hover { opacity: 1; }
 .tl-brush { fill: var(--warn); opacity: 0.18; }

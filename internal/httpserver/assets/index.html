@@ -51,7 +51,17 @@
 <section id="overview" class="overview"></section>
 
 <section id="timeline" class="panel">
-  <div class="panel-title">Timeline (hits per bucket)</div>
+  <div class="panel-title">
+    <span>Timeline (hits per bucket)</span>
+    <span class="range-presets" id="range-presets">
+      <button class="btn range-btn" type="button" data-days="7"   title="Last 7 days">7d</button>
+      <button class="btn range-btn" type="button" data-days="30"  title="Last 30 days">30d</button>
+      <button class="btn range-btn" type="button" data-days="90"  title="Last 3 months">3mo</button>
+      <button class="btn range-btn" type="button" data-days="180" title="Last 6 months">6mo</button>
+      <button class="btn range-btn" type="button" data-days="365" title="Last year">1y</button>
+      <button class="btn range-btn" type="button" data-days="0"   title="Clear time filter">all</button>
+    </span>
+  </div>
   <svg id="timeline-chart" preserveAspectRatio="none"></svg>
   <div class="timeline-brush hint">drag on the chart to filter by time range</div>
 </section>
