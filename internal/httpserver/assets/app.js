@@ -8,6 +8,9 @@ const state = {
   maxLiveRows: 200,
   view: 'dynamic',   // "dynamic" | "static" | "local" | "bots" | "malicious"
   sortBy: 'hits',    // "hits" | "bytes"
+  // 'local' renders timestamps in the browser's timezone, 'utc' in UTC.
+  // Persisted in localStorage so the choice survives reloads.
+  timeMode: (typeof localStorage !== 'undefined' && localStorage.getItem('caddylogs.timeMode') === 'utc') ? 'utc' : 'local',
   // Most-recent timestamp we've seen for the current view when no time
   // filter is active. Used as the "now" reference for range presets so
   // "last 7 days" means 7 days before the freshest row, not 7 days
@@ -30,39 +33,52 @@ function fmtDuration(ms) {
   if (ms < 1000) return ms + 'ms';
   return (ms / 1000).toFixed(1) + 's';
 }
-function fmtTs(tsStr) {
-  const d = new Date(tsStr);
-  return d.toISOString().replace('T', ' ').slice(0, 19);
+function inUTC() { return state.timeMode === 'utc'; }
+function fmtTs(ts) {
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (inUTC()) return d.toISOString().replace('T', ' ').slice(0, 19);
+  const pad2 = n => (n < 10 ? '0' : '') + n;
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' +
+    pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
 }
 
 // pickTimelineFormat returns a Date -> string formatter whose granularity
 // matches the total span so labels stay informative without being redundant.
-// Dates outside the current UTC year are suffixed with " YYYY" so a range
-// that straddles a year boundary stays unambiguous.
+// Dates outside the current year are suffixed with " YYYY" so a range
+// that straddles a year boundary stays unambiguous. Honors state.timeMode:
+// UTC labels are suffixed with 'Z'; local labels carry no suffix.
 function pickTimelineFormat(spanMs) {
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const currentYear = new Date().getUTCFullYear();
+  const utc = inUTC();
+  const yr = d => utc ? d.getUTCFullYear() : d.getFullYear();
+  const mo = d => utc ? d.getUTCMonth()    : d.getMonth();
+  const da = d => utc ? d.getUTCDate()     : d.getDate();
+  const hr = d => utc ? d.getUTCHours()    : d.getHours();
+  const mi = d => utc ? d.getUTCMinutes()  : d.getMinutes();
+  const se = d => utc ? d.getUTCSeconds()  : d.getSeconds();
+  const tz = utc ? 'Z' : '';
+  const currentYear = yr(new Date());
   const withYear = (d, base) =>
-    d.getUTCFullYear() === currentYear ? base : base + ' ' + d.getUTCFullYear();
+    yr(d) === currentYear ? base : base + ' ' + yr(d);
   if (spanMs < 2 * 60 * 60 * 1000) {
     // < 2h: HH:MM:SS
-    return d => pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ':' + pad2(d.getUTCSeconds()) + 'Z';
+    return d => pad2(hr(d)) + ':' + pad2(mi(d)) + ':' + pad2(se(d)) + tz;
   }
   if (spanMs < 36 * 60 * 60 * 1000) {
     // < 36h: HH:MM
-    return d => pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + 'Z';
+    return d => pad2(hr(d)) + ':' + pad2(mi(d)) + tz;
   }
   if (spanMs < 10 * 24 * 60 * 60 * 1000) {
     // < 10d: "Apr 22 14:00"
-    return d => withYear(d, MONTHS[d.getUTCMonth()] + ' ' + d.getUTCDate() + ' ' + pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()));
+    return d => withYear(d, MONTHS[mo(d)] + ' ' + da(d) + ' ' + pad2(hr(d)) + ':' + pad2(mi(d)));
   }
   if (spanMs < 2 * 365 * 24 * 60 * 60 * 1000) {
     // < 2y: "Apr 22"
-    return d => withYear(d, MONTHS[d.getUTCMonth()] + ' ' + d.getUTCDate());
+    return d => withYear(d, MONTHS[mo(d)] + ' ' + da(d));
   }
   // multi-year
-  return d => d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate());
+  return d => yr(d) + '-' + pad2(mo(d) + 1) + '-' + pad2(da(d));
 }
 function statusClass(n) {
   if (n >= 500) return 'status-5';
@@ -765,6 +781,18 @@ function setSort(s) {
   refreshAll();
 }
 
+function setTimeMode(m) {
+  if (!['local', 'utc'].includes(m)) return;
+  state.timeMode = m;
+  try { localStorage.setItem('caddylogs.timeMode', m); } catch {}
+  document.querySelectorAll('.time-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tz === m);
+  });
+  // Re-fetch + re-render so every timestamp (rows, timeline, chips,
+  // tags, span) picks up the new mode in one pass.
+  refreshAll();
+}
+
 function setView(v) {
   if (!['dynamic', 'static', 'local', 'bots', 'malicious'].includes(v)) return;
   state.view = v;
@@ -1052,7 +1080,7 @@ async function refreshTagList() {
     body.innerHTML = '';
     for (const t of tags) {
       const tr = document.createElement('tr');
-      const since = t.at ? new Date(Math.round(t.at / 1e6)).toISOString().replace('T', ' ').slice(0, 19) : '';
+      const since = t.at ? fmtTs(new Date(Math.round(t.at / 1e6))) : '';
       const source = t.source || 'manual';
       const reasonTip = t.reason ? ` — ${t.reason}` : '';
       tr.innerHTML = `
@@ -1267,6 +1295,10 @@ document.querySelectorAll('.view-btn').forEach(btn => {
 });
 document.querySelectorAll('.sort-btn').forEach(btn => {
   btn.addEventListener('click', () => setSort(btn.dataset.sort));
+});
+document.querySelectorAll('.time-btn').forEach(btn => {
+  btn.classList.toggle('active', btn.dataset.tz === state.timeMode);
+  btn.addEventListener('click', () => setTimeMode(btn.dataset.tz));
 });
 
 async function pollStatus() {
