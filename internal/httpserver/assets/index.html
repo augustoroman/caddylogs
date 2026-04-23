@@ -79,25 +79,35 @@
 <section id="panels"></section>
 
 <section id="static-section" class="panel">
-  <div class="panel-title">Static assets (on-demand)</div>
-  <button id="load-static" class="btn">Load static asset stats for current filters</button>
-  <div class="hint">The Static view (above) shows the full static dashboard; this button computes the quick summary without switching views.</div>
-  <div id="static-panels"></div>
+  <div class="panel-title collapsible-title" role="button" tabindex="0" title="click to expand/collapse">
+    <span>Static assets (on-demand)</span>
+    <span class="collapse-arrow" aria-hidden="true">▸</span>
+  </div>
+  <div id="static-collapsible" class="hidden">
+    <button id="load-static" class="btn">Load static asset stats for current filters</button>
+    <div class="hint">The Static view (above) shows the full static dashboard; this button computes the quick summary without switching views.</div>
+    <div id="static-panels"></div>
+  </div>
 </section>
 
 <section id="classifiers-section" class="panel hidden">
-  <div class="panel-title">Heuristic classifiers</div>
-  <table id="classifiers-table">
-    <thead><tr>
-      <th>Name</th><th>Description</th><th class="right"></th>
-    </tr></thead>
-    <tbody id="classifiers-body"></tbody>
-  </table>
-  <div class="hint">Each rule scans the "real" pool and tags matching IPs with its own source name. Re-running reconciles: newly-matching IPs are tagged, IPs that no longer match are reverted. Manual tags always win.</div>
+  <div class="panel-title collapsible-title" role="button" tabindex="0" title="click to expand/collapse">
+    <span>Heuristic classifiers</span>
+    <span class="collapse-arrow" aria-hidden="true">▸</span>
+  </div>
+  <div id="classifiers-collapsible" class="hidden">
+    <table id="classifiers-table">
+      <thead><tr>
+        <th>Name</th><th>Description</th><th class="right"></th>
+      </tr></thead>
+      <tbody id="classifiers-body"></tbody>
+    </table>
+    <div class="hint">Each rule scans the "real" pool and tags matching IPs with its own source name. Re-running reconciles: newly-matching IPs are tagged, IPs that no longer match are reverted. Manual tags always win.</div>
+  </div>
 </section>
 
 <section id="tags-section" class="panel hidden">
-  <div class="panel-title tags-title" role="button" tabindex="0" title="click to expand/collapse">
+  <div class="panel-title collapsible-title" role="button" tabindex="0" title="click to expand/collapse">
     <span>Manual IP tags <span class="muted" id="tags-count">0</span></span>
     <span class="collapse-arrow" aria-hidden="true">▸</span>
   </div>

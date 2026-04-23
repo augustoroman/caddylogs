@@ -1031,31 +1031,31 @@ async function applyTag(ip, tag) {
 // operator can audit or revoke overrides at a glance. Removing a tag
 // clears the file + classifier entry but deliberately leaves already-
 // classified rows alone; the hint in the HTML explains the trade.
-// setTagsExpanded shows/hides the tag table. Tags are collapsed by
-// default: most sessions don't need to see the list, and re-reading
-// stale tags distracts from the main dashboard. Persist preference so
-// users who do want to keep it open don't have to toggle on every
-// page load.
-function setTagsExpanded(expanded) {
-  const title = document.querySelector('#tags-section .tags-title');
-  const body = document.getElementById('tags-collapsible');
+// initCollapsibleSection wires a clickable title to a body element that
+// toggles hidden. Remembered state is keyed per-section in localStorage
+// so preferences survive reloads; unset keys fall back to collapsed,
+// which keeps the initial dashboard view compact.
+function initCollapsibleSection({ titleSelector, bodySelector, storageKey }) {
+  const title = document.querySelector(titleSelector);
+  const body = document.querySelector(bodySelector);
   if (!title || !body) return;
-  title.classList.toggle('expanded', expanded);
-  body.classList.toggle('hidden', !expanded);
-  try { localStorage.setItem('cl_tags_expanded', expanded ? '1' : '0'); } catch {}
-}
-function tagsExpanded() {
-  try { return localStorage.getItem('cl_tags_expanded') === '1'; } catch { return false; }
-}
-function initTagsCollapsible() {
-  const title = document.querySelector('#tags-section .tags-title');
-  if (!title) return;
-  setTagsExpanded(tagsExpanded());
-  title.addEventListener('click', () => setTagsExpanded(!title.classList.contains('expanded')));
+  let expanded = false;
+  try {
+    if (storageKey && localStorage.getItem(storageKey) === '1') expanded = true;
+  } catch {}
+  const apply = (want) => {
+    title.classList.toggle('expanded', want);
+    body.classList.toggle('hidden', !want);
+    if (storageKey) {
+      try { localStorage.setItem(storageKey, want ? '1' : '0'); } catch {}
+    }
+  };
+  apply(expanded);
+  title.addEventListener('click', () => apply(!title.classList.contains('expanded')));
   title.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      setTagsExpanded(!title.classList.contains('expanded'));
+      apply(!title.classList.contains('expanded'));
     }
   });
 }
@@ -1312,7 +1312,21 @@ async function pollStatus() {
 }
 setInterval(pollStatus, 3000);
 pollStatus();
-initTagsCollapsible();
+initCollapsibleSection({
+  titleSelector: '#static-section .collapsible-title',
+  bodySelector: '#static-collapsible',
+  storageKey: 'cl_static_expanded',
+});
+initCollapsibleSection({
+  titleSelector: '#classifiers-section .collapsible-title',
+  bodySelector: '#classifiers-collapsible',
+  storageKey: 'cl_classifiers_expanded',
+});
+initCollapsibleSection({
+  titleSelector: '#tags-section .collapsible-title',
+  bodySelector: '#tags-collapsible',
+  storageKey: 'cl_tags_expanded',
+});
 loadClassifiers();
 refreshAll();
 openWS();
