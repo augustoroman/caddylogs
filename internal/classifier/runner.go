@@ -141,6 +141,31 @@ func (r *Runner) Run(ctx context.Context, c Classifier) (*RunResult, error) {
 	return result, nil
 }
 
+// Clear removes every tag this classifier currently owns. Same revert
+// semantics as the Run "removed" branch: each IP's rows are moved back to
+// the real pool, the DB's manual_tags row is deleted, and the persisted
+// entry is dropped. Manual tags and tags owned by other classifiers are
+// untouched — ownership is checked by Source. The returned result re-uses
+// RunResult so the UI can show the counts the same way it does for Run.
+func (r *Runner) Clear(ctx context.Context, c Classifier) (*RunResult, error) {
+	start := time.Now()
+	result := &RunResult{Name: c.Name()}
+	for _, e := range r.tags.ListBySource(c.Name()) {
+		if err := r.store.ApplyManualTag(ctx, e.IP, classify.ManualTagReal); err != nil {
+			return nil, fmt.Errorf("revert tag %s: %w", e.IP, err)
+		}
+		if err := r.store.RemoveManualTag(ctx, e.IP); err != nil {
+			return nil, fmt.Errorf("remove DB tag %s: %w", e.IP, err)
+		}
+		if err := r.tags.Delete(e.IP); err != nil {
+			return nil, fmt.Errorf("delete persisted tag %s: %w", e.IP, err)
+		}
+		result.Removed = append(result.Removed, e.IP)
+	}
+	result.Elapsed = time.Since(start).Milliseconds()
+	return result, nil
+}
+
 // ByName looks up a classifier in cs by name. Returns nil when no match.
 func ByName(cs []Classifier, name string) Classifier {
 	for _, c := range cs {

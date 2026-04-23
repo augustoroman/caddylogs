@@ -115,6 +115,13 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 		}
 		return runner.Run(ctx, c)
 	})
+	server.SetClassifierClearFn(func(ctx context.Context, name string) (any, error) {
+		c := classifier.ByName(classifiers, name)
+		if c == nil {
+			return nil, fmt.Errorf("unknown classifier %q", name)
+		}
+		return runner.Clear(ctx, c)
+	})
 
 	// Live tail on a separate goroutine. Cancellation via ctx.
 	if !opts.NoTail {

@@ -24,18 +24,19 @@ type DefaultFilter struct {
 
 // Server owns the routes, the backend Store, and the live-tail broadcast hub.
 type Server struct {
-	store            backend.Store
-	defaults         DefaultFilter
-	hub              *hub
-	assets           fs.FS
-	ingestMu         sync.RWMutex
-	ingestBusy       bool
-	classificationFn ClassificationFunc // optional; when set, /api/classification is available
-	tagFn            TagFunc            // optional; when set, POST /api/tag is available
-	tagListFn        TagListFunc        // optional; when set, GET /api/tags is available
-	tagRemoveFn      TagRemoveFunc      // optional; when set, DELETE /api/tag is available
-	classifierListFn ClassifierListFunc // optional; when set, GET /api/classifiers is available
-	classifierRunFn  ClassifierRunFunc  // optional; when set, POST /api/classifiers/run is available
+	store             backend.Store
+	defaults          DefaultFilter
+	hub               *hub
+	assets            fs.FS
+	ingestMu          sync.RWMutex
+	ingestBusy        bool
+	classificationFn  ClassificationFunc  // optional; when set, /api/classification is available
+	tagFn             TagFunc             // optional; when set, POST /api/tag is available
+	tagListFn         TagListFunc         // optional; when set, GET /api/tags is available
+	tagRemoveFn       TagRemoveFunc       // optional; when set, DELETE /api/tag is available
+	classifierListFn  ClassifierListFunc  // optional; when set, GET /api/classifiers is available
+	classifierRunFn   ClassifierRunFunc   // optional; when set, POST /api/classifiers/run is available
+	classifierClearFn ClassifierClearFunc // optional; when set, POST /api/classifiers/clear is available
 }
 
 // ClassificationFunc computes the 6-cell breakdown for the header strip.
@@ -89,6 +90,10 @@ type ClassifierListFunc func(ctx context.Context) (any, error)
 // of the reconciliation (adds/removes/skips).
 type ClassifierRunFunc func(ctx context.Context, name string) (any, error)
 
+// ClassifierClearFunc removes every tag a named classifier currently owns
+// and reverts those rows back to the real pool.
+type ClassifierClearFunc func(ctx context.Context, name string) (any, error)
+
 // SetClassifierListFn registers the GET /api/classifiers handler.
 func (s *Server) SetClassifierListFn(fn ClassifierListFunc) {
 	s.classifierListFn = fn
@@ -97,6 +102,11 @@ func (s *Server) SetClassifierListFn(fn ClassifierListFunc) {
 // SetClassifierRunFn registers the POST /api/classifiers/run handler.
 func (s *Server) SetClassifierRunFn(fn ClassifierRunFunc) {
 	s.classifierRunFn = fn
+}
+
+// SetClassifierClearFn registers the POST /api/classifiers/clear handler.
+func (s *Server) SetClassifierClearFn(fn ClassifierClearFunc) {
+	s.classifierClearFn = fn
 }
 
 // New builds a Server. assets is the filesystem of UI assets; pass the
@@ -125,6 +135,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/tags", s.handleTagList)
 	mux.HandleFunc("/api/classifiers", s.handleClassifierList)
 	mux.HandleFunc("/api/classifiers/run", s.handleClassifierRun)
+	mux.HandleFunc("/api/classifiers/clear", s.handleClassifierClear)
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.Handle("/", http.FileServer(http.FS(s.assets)))
 	return mux
@@ -348,6 +359,29 @@ func (s *Server) handleClassifierRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := s.classifierRunFn(r.Context(), name)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, out)
+}
+
+// handleClassifierClear wipes every tag the named classifier currently owns.
+func (s *Server) handleClassifierClear(w http.ResponseWriter, r *http.Request) {
+	if s.classifierClearFn == nil {
+		s.writeError(w, http.StatusNotFound, "classifiers not configured")
+		return
+	}
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		s.writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	out, err := s.classifierClearFn(r.Context(), name)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return

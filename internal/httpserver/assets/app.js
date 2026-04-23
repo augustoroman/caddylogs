@@ -1122,10 +1122,16 @@ async function loadClassifiers() {
       tr.innerHTML = `
         <td><code>${escapeHTML(c.name)}</code></td>
         <td class="muted">${escapeHTML(c.description)}</td>
-        <td class="right"><button class="btn classifier-run" type="button">Run</button></td>
+        <td class="right">
+          <button class="btn classifier-run" type="button">Run</button>
+          <button class="btn classifier-clear" type="button" title="Remove every IP this classifier tagged">Clear</button>
+        </td>
       `;
       tr.querySelector('.classifier-run').addEventListener('click', (ev) => {
         runClassifier(c.name, ev.target);
+      });
+      tr.querySelector('.classifier-clear').addEventListener('click', (ev) => {
+        clearClassifier(c.name, ev.target);
       });
       body.appendChild(tr);
     }
@@ -1158,6 +1164,35 @@ async function runClassifier(name, btn) {
     setTimeout(() => { if (btn && original != null) { btn.textContent = original; btn.disabled = false; } }, 2000);
   } catch (e) {
     alert('Failed to run classifier ' + name + ': ' + e.message);
+    if (btn && original != null) { btn.textContent = original; btn.disabled = false; }
+  }
+}
+
+async function clearClassifier(name, btn) {
+  if (!confirm(`Remove every IP tagged by ${name}?\n\nThis reverts those rows back to the real pool. Manual tags and other classifiers' tags are not affected.`)) {
+    return;
+  }
+  const original = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = 'clearing…'; }
+  try {
+    const r = await fetch('/api/classifiers/clear?name=' + encodeURIComponent(name), { method: 'POST' });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.error || ('HTTP ' + r.status));
+    }
+    const result = await r.json();
+    const removed = (result.removed || []).length;
+    const elapsed = result.elapsed_ms || 0;
+    console.log(`${name}: -${removed} untagged in ${elapsed}ms`);
+    if (removed) {
+      refreshAll();
+    } else {
+      refreshTagList();
+    }
+    if (btn) { btn.textContent = `-${removed}`; }
+    setTimeout(() => { if (btn && original != null) { btn.textContent = original; btn.disabled = false; } }, 2000);
+  } catch (e) {
+    alert('Failed to clear classifier ' + name + ': ' + e.message);
     if (btn && original != null) { btn.textContent = original; btn.disabled = false; }
   }
 }
