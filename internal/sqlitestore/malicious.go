@@ -59,7 +59,11 @@ func (s *Store) ComputeBehavioralAttackers(ctx context.Context, t AttackerThresh
 	// Rule B: high 4xx rate across the whole union. We do this per table and
 	// merge, because one IP could be split between tables. Local IPs are
 	// excluded — a router doing health-check probes shouldn't be tagged as
-	// an attacker.
+	// an attacker. Bot-UA rows are also excluded: a recognized crawler
+	// (Googlebot, Bingbot, OAI-SearchBot, ...) discovering content through
+	// stale links racks up 404s as a matter of course, and that is normal
+	// crawler behavior, not an attack signal. Rule A still catches bot-UAs
+	// that hit actual attack URIs, which is the case worth flagging.
 	if t.MinHits > 0 {
 		p("behavioral", "rule B: IPs with high 4xx rate", -1, -1)
 		// Aggregate hits + 4xx count per IP across dynamic + static + malicious.
@@ -67,13 +71,13 @@ func (s *Store) ComputeBehavioralAttackers(ctx context.Context, t AttackerThresh
             SELECT ip, SUM(hits), SUM(err)
             FROM (
               SELECT ip, 1 AS hits, CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END AS err
-                FROM requests_dynamic  WHERE is_local = 0
+                FROM requests_dynamic  WHERE is_local = 0 AND is_bot = 0
               UNION ALL
               SELECT ip, 1, CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END
-                FROM requests_static   WHERE is_local = 0
+                FROM requests_static   WHERE is_local = 0 AND is_bot = 0
               UNION ALL
               SELECT ip, 1, CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END
-                FROM requests_malicious WHERE is_local = 0
+                FROM requests_malicious WHERE is_local = 0 AND is_bot = 0
             )
             GROUP BY ip
             HAVING SUM(hits) >= ? AND (SUM(err) * 1.0 / SUM(hits)) >= ?`
