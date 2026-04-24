@@ -78,6 +78,7 @@ type Info struct {
 // informative tag.
 func BuiltIn() []Classifier {
 	return []Classifier{
+		NewProbeOnlyURI(),   // history == only known canary URIs
 		NewRootOnly(),       // "/" + no static + burst/revisit
 		NewCadencePolling(), // regular inter-request timing
 		NewHeadOnly(),       // all HEAD
