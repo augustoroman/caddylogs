@@ -54,6 +54,7 @@ var dashboardPanels = []panelSpec{
 	{Name: "device", GroupBy: backend.DimDevice},
 	{Name: "host", GroupBy: backend.DimHost},
 	{Name: "method", GroupBy: backend.DimMethod},
+	{Name: "status", GroupBy: backend.DimStatus},
 	{
 		Name: "not_found", GroupBy: backend.DimURI,
 		Extra: backend.Filter{Include: map[backend.Dimension][]string{backend.DimStatus: {"404"}}},

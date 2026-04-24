@@ -379,6 +379,7 @@ const DYNAMIC_PANELS = [
   { name: 'slow', title: 'Slow Requests (max)', dim: 'uri', extraCol: 'max_ms' },
   { name: 'host', title: 'Top Hosts', dim: 'host' },
   { name: 'method', title: 'Methods', dim: 'method' },
+  { name: 'status', title: 'Status codes', dim: 'status' },
 ];
 const MALICIOUS_PANELS = [
   { name: 'ip', title: 'Top attacker IPs', dim: 'ip' },
