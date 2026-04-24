@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -339,6 +341,47 @@ func loadManualTags(ctx context.Context, store *sqlitestore.Store, cls *classify
 		fmt.Fprintf(os.Stderr, "caddylogs: loaded %d manual tag(s) from %s\n", set.Count(), path)
 	}
 	return nil
+}
+
+// resolveProbeURIsFile mirrors resolveTagsFile: empty override ⇒
+// $XDG_CONFIG_HOME/caddylogs/probe-uris.json.
+func resolveProbeURIsFile(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "caddylogs", "probe-uris.json"), nil
+}
+
+// buildClassifiers returns the heuristic classifier slice for this
+// invocation, with the probe-only-uri rule's URI list overridden by a
+// config file when one is present. Missing-at-default-path is silent
+// (the user never opted in); any other load error is fatal, including
+// a missing file when --probe-uris-file was explicitly passed.
+func buildClassifiers(c commonFlags) ([]classifier.Classifier, error) {
+	classifiers := classifier.BuiltIn()
+	path, err := resolveProbeURIsFile(c.ProbeURIsFile)
+	if err != nil {
+		return nil, err
+	}
+	probes, err := classifier.LoadProbeURIs(path)
+	if err != nil {
+		if c.ProbeURIsFile == "" && errors.Is(err, fs.ErrNotExist) {
+			return classifiers, nil
+		}
+		return nil, fmt.Errorf("probe-uris: %w", err)
+	}
+	for _, cf := range classifiers {
+		if p, ok := cf.(*classifier.ProbeOnlyURI); ok {
+			p.Probes = probes
+			break
+		}
+	}
+	fmt.Fprintf(os.Stderr, "caddylogs: loaded %d probe URI(s) from %s\n", len(probes), path)
+	return classifiers, nil
 }
 
 // runBuiltInClassifiers executes each registered heuristic classifier

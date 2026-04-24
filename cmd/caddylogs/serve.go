@@ -53,7 +53,10 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 	// the diff vs. the previous tag set for each classifier and respects
 	// operator overrides (see Runner.Run). Default-on; skip with
 	// --no-classifiers.
-	classifiers := classifier.BuiltIn()
+	classifiers, err := buildClassifiers(opts.commonFlags)
+	if err != nil {
+		return err
+	}
 	runner := classifier.NewRunner(store, cls.ManualTags)
 	if !opts.NoClassifiers {
 		if err := runBuiltInClassifiers(ctx, runner, classifiers); err != nil {

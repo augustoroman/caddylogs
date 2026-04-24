@@ -1,6 +1,10 @@
 package classifier_test
 
 import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -136,5 +140,67 @@ func TestProbeOnlyURI_IdempotentAcrossClaimed(t *testing.T) {
 	}
 	if byIP["2.2.2.2"] != classify.ManualTagMalicious {
 		t.Errorf("2.2.2.2 after reclaim: tag=%q, want malicious", byIP["2.2.2.2"])
+	}
+}
+
+// TestLoadProbeURIs covers the file-backed override path: valid JSON
+// round-trips, missing files surface fs.ErrNotExist so callers can
+// silently fall back to defaults, and every failure mode (empty list,
+// empty URI, unknown tag, malformed JSON) is reported as an error
+// instead of quietly producing a broken classifier.
+func TestLoadProbeURIs(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	t.Run("happy path", func(t *testing.T) {
+		p := write("ok.json", `[
+			{"uri": "/a", "tag": "bot"},
+			{"uri": "/b", "tag": "malicious"}
+		]`)
+		got, err := classifier.LoadProbeURIs(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []classifier.ProbeURI{
+			{URI: "/a", Tag: classify.ManualTagBot},
+			{URI: "/b", Tag: classify.ManualTagMalicious},
+		}
+		if len(got) != len(want) {
+			t.Fatalf("got %d entries, want %d", len(got), len(want))
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("entry %d: got %+v, want %+v", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("missing file wraps ErrNotExist", func(t *testing.T) {
+		_, err := classifier.LoadProbeURIs(filepath.Join(dir, "nope.json"))
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("err=%v, want wraps fs.ErrNotExist", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{"empty list", `[]`},
+		{"empty uri", `[{"uri": "", "tag": "bot"}]`},
+		{"unknown tag", `[{"uri": "/x", "tag": "real"}]`},
+		{"malformed", `{not json`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := write(tc.name+".json", tc.body)
+			if _, err := classifier.LoadProbeURIs(p); err == nil {
+				t.Errorf("expected error for %s, got nil", tc.name)
+			}
+		})
 	}
 }

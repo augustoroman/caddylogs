@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -26,9 +27,12 @@ type ProbeURI struct {
 // mechanism — IPs probing it are almost all legitimate scanners, so
 // the tag is "bot", not "malicious". /ip and /cdn-cgi/trace are
 // classic proxy / SSRF probes (attackers fingerprinting outbound
-// egress through a misconfigured proxy); those lean malicious. Extend
-// this list or override ProbeOnlyURI.Probes before registration to
-// add site-specific canaries without a schema change.
+// egress through a misconfigured proxy); those lean malicious.
+//
+// Operators override this list at startup with --probe-uris-file
+// (see LoadProbeURIs); the file's contents replace the defaults
+// wholesale rather than merging, so the author has one authoritative
+// source of truth for the site's canary set.
 var DefaultProbeURIs = []ProbeURI{
 	{URI: "/.well-known/traffic-advice", Tag: classify.ManualTagBot},
 	{URI: "/ip", Tag: classify.ManualTagMalicious},
@@ -53,6 +57,48 @@ type ProbeOnlyURI struct {
 // NewProbeOnlyURI returns the rule with the default probe URI list.
 func NewProbeOnlyURI() *ProbeOnlyURI {
 	return &ProbeOnlyURI{Probes: append([]ProbeURI(nil), DefaultProbeURIs...)}
+}
+
+// LoadProbeURIs reads a probe-URI list from path. The JSON shape is an
+// array of {"uri": ..., "tag": ...} objects where tag is "bot" or
+// "malicious"; anything else is a hard error. If the file is missing,
+// the error wraps os.ErrNotExist so callers can distinguish "no
+// override, use defaults" from "override was requested but broken".
+//
+// A present-but-empty list is rejected: the probable intent is "don't
+// run this classifier" and the cleaner way to express that is to omit
+// it from BuiltIn (or pass --no-classifiers). Silently accepting an
+// empty list would hide a config bug.
+func LoadProbeURIs(path string) ([]ProbeURI, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var raw []struct {
+		URI string `json:"uri"`
+		Tag string `json:"tag"`
+	}
+	if err := json.NewDecoder(f).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("%s: probe list is empty", path)
+	}
+	out := make([]ProbeURI, 0, len(raw))
+	for i, r := range raw {
+		if r.URI == "" {
+			return nil, fmt.Errorf("%s: entry %d: uri is empty", path, i)
+		}
+		tag := classify.ManualTag(r.Tag)
+		if tag != classify.ManualTagBot && tag != classify.ManualTagMalicious {
+			return nil, fmt.Errorf("%s: entry %d (%s): tag %q must be \"bot\" or \"malicious\"",
+				path, i, r.URI, r.Tag)
+		}
+		out = append(out, ProbeURI{URI: r.URI, Tag: tag})
+	}
+	return out, nil
 }
 
 func (p *ProbeOnlyURI) Name() string { return ProbeOnlyURIName }

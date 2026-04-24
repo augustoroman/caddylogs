@@ -40,8 +40,12 @@ func runReport(ctx context.Context, opts *reportFlags) error {
 	}
 
 	if !opts.NoClassifiers {
+		classifiers, err := buildClassifiers(opts.commonFlags)
+		if err != nil {
+			return err
+		}
 		runner := classifier.NewRunner(store, cls.ManualTags)
-		if err := runBuiltInClassifiers(ctx, runner, classifier.BuiltIn()); err != nil {
+		if err := runBuiltInClassifiers(ctx, runner, classifiers); err != nil {
 			return err
 		}
 	}

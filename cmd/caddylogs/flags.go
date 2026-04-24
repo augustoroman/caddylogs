@@ -23,6 +23,7 @@ type commonFlags struct {
 	AttackErrRate     float64
 	AttackMinURIHits  int
 	NoClassifiers     bool
+	ProbeURIsFile     string
 }
 
 // serveFlags extends commonFlags with server-specific options.
@@ -74,6 +75,8 @@ func bindCommon(cmd *kingpin.CmdClause, c *commonFlags) {
 		Default("2").IntVar(&c.AttackMinURIHits)
 	cmd.Flag("no-classifiers", "Skip the built-in heuristic classifiers (root-only-burst, etc.) at startup. They can still be run on demand from the dashboard.").
 		BoolVar(&c.NoClassifiers)
+	cmd.Flag("probe-uris-file", "Replace the embedded probe-URI list used by the probe-only-uri classifier with this JSON file. Empty means look in the OS config dir; missing at the default path silently falls back to built-ins.").
+		StringVar(&c.ProbeURIsFile)
 }
 
 func bindServeFlags(cmd *kingpin.CmdClause) *serveFlags {
