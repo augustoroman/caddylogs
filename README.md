@@ -180,8 +180,10 @@ like "both 4xx and 5xx" still work. Shift-click on most rows to add an
 `exclude` filter.
 
 Filter chips along the top show the active set; each has an `×` to
-remove it. Two free-text inputs next to the chips let you filter by
-exact IP or by URL substring (shown as a green `uri ∋ …` chip).
+remove it. Every panel header carries a small free-text input that
+filters by that panel's dimension — IP panels use exact include (same
+drill-down semantics as clicking a row), every other dimension uses
+substring contains (shown as a green `dim ∋ …` chip).
 
 Drag on the timeline to brush a time range; the drag keeps tracking
 when your cursor leaves the chart, so "from some time ago through now"
@@ -197,7 +199,8 @@ Panels show top-10 by default with a **show 25 more** button beneath each
 one that appends the next page without refetching the dashboard. Every
 column header has a drag handle on its right edge — widths persist per
 panel in `localStorage`. Every cell has a hover tooltip with the full
-value plus a hits/visitors/bytes summary.
+value plus a hits/visitors/bytes summary; the Status-codes panel also
+shows the canonical HTTP reason phrase (e.g. `404 Not Found`).
 
 A top-bar `sort [hits] [data]` toggle swaps every panel's primary column
 between hit count and total bytes. URIs by hits tend to be landing pages;
