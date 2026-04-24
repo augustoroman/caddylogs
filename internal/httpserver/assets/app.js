@@ -429,8 +429,18 @@ function renderPanels(panels) {
          <th data-col="primary" class="right">${escapeHTML(prim.label)}<span class="col-resize"></span></th>
          <th data-col="bar"></th>
        </tr>`;
+    // Panel-filter input does exact-include for IP (drill-down) and
+    // substring-contains for every other dimension, mirroring the old
+    // top-bar inputs but per-panel. Chips still render in the filter bar.
+    const pfPlaceholder = `filter ${def.dim}…`;
+    const pfTitle = def.dim === 'ip'
+      ? 'Type an IP and hit Enter to filter'
+      : `Type a substring and hit Enter to filter by ${def.dim}`;
     sec.innerHTML = `
-      <div class="panel-title">${escapeHTML(def.title)} <span class="muted panel-count">${initialRows.length}</span></div>
+      <div class="panel-title">
+        <span><span>${escapeHTML(def.title)}</span> <span class="muted panel-count">${initialRows.length}</span></span>
+        <input type="text" class="panel-filter" placeholder="${escapeHTML(pfPlaceholder)}" autocomplete="off" spellcheck="false" title="${escapeHTML(pfTitle)}">
+      </div>
       <table class="panel-table" data-panel="${def.name}">
         <thead>${headers}</thead>
         <tbody></tbody>
@@ -441,6 +451,15 @@ function renderPanels(panels) {
       </div>
     `;
     container.appendChild(sec);
+    const pfInput = sec.querySelector('.panel-filter');
+    pfInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const v = pfInput.value.trim();
+      if (!v) return;
+      if (def.dim === 'ip') addFilter(def.dim, v, false);
+      else addContainsFilter(def.dim, v);
+      pfInput.value = '';
+    });
     sec._pg = {
       rows: [],
       offset: 0,
@@ -1273,34 +1292,8 @@ function openWS() {
 // --- wire up ---
 document.getElementById('clear-filters').addEventListener('click', () => {
   state.filter = { include: {}, exclude: {}, contains: {}, time_from: null, time_to: null };
-  const ipInput = document.getElementById('filter-ip');
-  const uriInput = document.getElementById('filter-uri');
-  if (ipInput) ipInput.value = '';
-  if (uriInput) uriInput.value = '';
   refreshAll();
 });
-// Free-text filter inputs. IP input does exact include, URI does
-// substring contains. Enter applies; blank values are ignored.
-const ipInputEl = document.getElementById('filter-ip');
-if (ipInputEl) {
-  ipInputEl.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
-    const v = ipInputEl.value.trim();
-    if (!v) return;
-    addFilter('ip', v, false);
-    ipInputEl.value = '';
-  });
-}
-const uriInputEl = document.getElementById('filter-uri');
-if (uriInputEl) {
-  uriInputEl.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
-    const v = uriInputEl.value.trim();
-    if (!v) return;
-    addContainsFilter('uri', v);
-    uriInputEl.value = '';
-  });
-}
 
 // Timeline range presets. "N days back from the freshest known
 // timestamp" so historical logs don't end up with an empty window
