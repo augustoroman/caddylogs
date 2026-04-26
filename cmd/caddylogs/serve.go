@@ -53,15 +53,26 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 	// the diff vs. the previous tag set for each classifier and respects
 	// operator overrides (see Runner.Run). Default-on; skip with
 	// --no-classifiers.
+	//
+	// Spawned in the background so the dashboard comes up immediately —
+	// classifier runs can take a minute or more on a big DB and there's
+	// no reason to make the operator wait. ManualTagSet is sync.RWMutex
+	// guarded and the SQLite store is in WAL mode, so the goroutine and
+	// HTTP handlers can read/write concurrently. The dashboard reads
+	// fresh from the DB on every request so newly-applied tags are
+	// visible to anyone who refreshes (or runs a new query) once the
+	// classifiers finish.
 	classifiers, err := buildClassifiers(opts.commonFlags)
 	if err != nil {
 		return err
 	}
 	runner := classifier.NewRunner(store, cls.ManualTags)
 	if !opts.NoClassifiers {
-		if err := runBuiltInClassifiers(ctx, runner, classifiers); err != nil {
-			return err
-		}
+		go func() {
+			if err := runBuiltInClassifiers(ctx, runner, classifiers); err != nil {
+				fmt.Fprintf(os.Stderr, "caddylogs: classifier batch error: %v\n", err)
+			}
+		}()
 	}
 
 	server := httpserver.New(store, httpserver.Assets(), httpserver.DefaultFilter{
