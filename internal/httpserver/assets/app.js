@@ -11,6 +11,10 @@ const state = {
   // 'local' renders timestamps in the browser's timezone, 'utc' in UTC.
   // Persisted in localStorage so the choice survives reloads.
   timeMode: (typeof localStorage !== 'undefined' && localStorage.getItem('caddylogs.timeMode') === 'utc') ? 'utc' : 'local',
+  // Panel min-column width: 'narrow' fits more panels side-by-side,
+  // 'wide' lets long values (URIs, UAs) breathe. Drives the
+  // --panel-min-width CSS variable on #panels.
+  panelWidth: (typeof localStorage !== 'undefined' && localStorage.getItem('caddylogs.panelWidth')) || 'medium',
   // Most-recent timestamp we've seen for the current view when no time
   // filter is active. Used as the "now" reference for range presets so
   // "last 7 days" means 7 days before the freshest row, not 7 days
@@ -841,6 +845,23 @@ function setTimeMode(m) {
   refreshAll();
 }
 
+// PANEL_MIN_WIDTHS maps the operator-facing label to the actual CSS
+// minmax() floor that #panels uses. Wider floors mean fewer-but-wider
+// columns, which is what you want when long URIs or UAs are getting
+// truncated; narrower floors let more panels sit side-by-side on a
+// big monitor.
+const PANEL_MIN_WIDTHS = { narrow: '280px', medium: '380px', wide: '560px' };
+
+function setPanelWidth(w) {
+  if (!PANEL_MIN_WIDTHS[w]) return;
+  state.panelWidth = w;
+  try { localStorage.setItem('caddylogs.panelWidth', w); } catch {}
+  document.documentElement.style.setProperty('--panel-min-width', PANEL_MIN_WIDTHS[w]);
+  document.querySelectorAll('.pw-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.pw === w);
+  });
+}
+
 function setView(v) {
   if (!['dynamic', 'static', 'local', 'bots', 'malicious'].includes(v)) return;
   state.view = v;
@@ -1357,6 +1378,12 @@ document.querySelectorAll('.time-btn').forEach(btn => {
   btn.classList.toggle('active', btn.dataset.tz === state.timeMode);
   btn.addEventListener('click', () => setTimeMode(btn.dataset.tz));
 });
+document.querySelectorAll('.pw-btn').forEach(btn => {
+  btn.addEventListener('click', () => setPanelWidth(btn.dataset.pw));
+});
+// Apply the persisted panel-width on load so the grid starts at the
+// operator's preferred density rather than flashing the default first.
+setPanelWidth(state.panelWidth);
 
 async function pollStatus() {
   try {
