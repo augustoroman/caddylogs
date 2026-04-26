@@ -385,23 +385,61 @@ func buildClassifiers(c commonFlags) ([]classifier.Classifier, error) {
 }
 
 // runBuiltInClassifiers executes each registered heuristic classifier
-// and prints a one-line summary per run. Runner.Run is idempotent, so
-// a failure in one classifier doesn't abort the batch — we surface the
-// error and continue so startup is never blocked by a single broken
-// rule.
+// in order, with start/end log lines per run and a 5s heartbeat for
+// any rule that takes longer — some queries (cadence, no-static-ever)
+// run for tens of seconds on real-world data, and a silent run is
+// indistinguishable from a hung process. Runner.Run is idempotent, so
+// a failure in one classifier doesn't abort the batch.
 func runBuiltInClassifiers(ctx context.Context, runner *classifier.Runner, classifiers []classifier.Classifier) error {
-	for _, c := range classifiers {
-		res, err := runner.Run(ctx, c)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "caddylogs: classifier %s failed: %v\n", c.Name(), err)
-			continue
-		}
-		fmt.Fprintf(os.Stderr,
-			"caddylogs: classifier %s: +%d / -%d / skipped %d (%dms)\n",
-			c.Name(), len(res.Added), len(res.Removed), len(res.Skipped), res.Elapsed,
-		)
+	total := len(classifiers)
+	batchStart := time.Now()
+	for i, c := range classifiers {
+		runOne(ctx, runner, c, i+1, total)
 	}
+	fmt.Fprintf(os.Stderr,
+		"caddylogs: classifiers complete in %s\n",
+		time.Since(batchStart).Round(100*time.Millisecond))
 	return nil
+}
+
+// runOne wraps a single Runner.Run call with start/end logging plus a
+// heartbeat goroutine that prints "still running" every 5s while the
+// SQL is in flight. The heartbeat names the classifier so a slow run
+// is immediately attributable to the rule that's hanging — invaluable
+// when debugging which rule is the bottleneck on a particular DB.
+func runOne(ctx context.Context, runner *classifier.Runner, c classifier.Classifier, n, total int) {
+	start := time.Now()
+	fmt.Fprintf(os.Stderr,
+		"caddylogs: classifier %s [%d/%d] running...\n", c.Name(), n, total)
+
+	hbDone := make(chan struct{})
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-hbDone:
+				return
+			case <-t.C:
+				fmt.Fprintf(os.Stderr,
+					"caddylogs: classifier %s still running (%s elapsed)\n",
+					c.Name(), time.Since(start).Round(time.Second))
+			}
+		}
+	}()
+
+	res, err := runner.Run(ctx, c)
+	close(hbDone)
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "caddylogs: classifier %s failed after %s: %v\n",
+			c.Name(), time.Since(start).Round(time.Millisecond), err)
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"caddylogs: classifier %s done: +%d / -%d / skipped %d (%dms)\n",
+		c.Name(), len(res.Added), len(res.Removed), len(res.Skipped), res.Elapsed,
+	)
 }
 
 // replayManualTags calls Store.ApplyManualTag for every loaded tag. After
