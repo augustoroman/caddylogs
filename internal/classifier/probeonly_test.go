@@ -84,6 +84,69 @@ func TestProbeOnlyURI_FlagsSingleRequestProbers(t *testing.T) {
 	}
 }
 
+// TestProbeOnlyURI_GlobsMatchPattern exercises the glob path: a probe
+// entry with a wildcard URI tags every singleton-IP whose only request
+// matches the pattern, while IPs with any history outside the pattern
+// (or no match at all) are left alone. Mixed exact + glob entries
+// share the candidate set and the most-severe tag still wins.
+func TestProbeOnlyURI_GlobsMatchPattern(t *testing.T) {
+	store, _, ctx, cleanup := newTestStore(t)
+	defer cleanup()
+
+	base := time.Date(2026, 4, 22, 0, 0, 0, 0, time.UTC)
+	events := []parser.Event{
+		// 1.1.1.1: single glob hit — candidate (bot via /dl/*.uf2).
+		humanBrowser("1.1.1.1", "/dl/firmware.20260101-001.uf2", "GET", "HTTP/2.0", base),
+
+		// 2.2.2.2: glob hit + an unrelated request — disqualified.
+		humanBrowser("2.2.2.2", "/dl/firmware.20260102-002.uf2", "GET", "HTTP/2.0", base),
+		humanBrowser("2.2.2.2", "/about", "GET", "HTTP/2.0", base.Add(time.Minute)),
+
+		// 3.3.3.3: matches both an exact probe (malicious) and the glob
+		// (bot) — most-severe wins, tag should be malicious.
+		humanBrowser("3.3.3.3", "/ip", "GET", "HTTP/2.0", base),
+		humanBrowser("3.3.3.3", "/dl/firmware.20260103-003.uf2", "GET", "HTTP/2.0", base.Add(time.Minute)),
+
+		// 4.4.4.4: single request to /dl/ that does NOT match the glob
+		// (no .uf2 suffix) — not a candidate.
+		humanBrowser("4.4.4.4", "/dl/readme.txt", "GET", "HTTP/2.0", base),
+	}
+	if err := store.Ingest(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+
+	rule := &classifier.ProbeOnlyURI{Probes: []classifier.ProbeURI{
+		{URI: "/ip", Tag: classify.ManualTagMalicious},
+		{URI: "/dl/*.uf2", Tag: classify.ManualTagBot},
+	}}
+	decisions, err := rule.Run(ctx, classifier.RunEnv{DB: store.DB()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]classify.ManualTag{}
+	for _, d := range decisions {
+		got[d.IP] = d.Tag
+	}
+	want := map[string]classify.ManualTag{
+		"1.1.1.1": classify.ManualTagBot,
+		"3.3.3.3": classify.ManualTagMalicious,
+	}
+	for ip, tag := range want {
+		if got[ip] != tag {
+			t.Errorf("ip %s tag=%q, want %q", ip, got[ip], tag)
+		}
+	}
+	for _, ip := range []string{"2.2.2.2", "4.4.4.4"} {
+		if _, ok := got[ip]; ok {
+			t.Errorf("ip %s was flagged, want no decision", ip)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("got %d decisions, want %d (%v)", len(got), len(want), got)
+	}
+}
+
 // TestProbeOnlyURI_IdempotentAcrossClaimed regresses the oscillation
 // bug for both bot and malicious tags. A probe IP tagged bot stays in
 // requests_dynamic with is_bot=1; a probe IP tagged malicious has its
