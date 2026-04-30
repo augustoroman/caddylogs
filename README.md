@@ -131,7 +131,7 @@ The built-in rules:
 
 | Name | Pattern |
 | --- | --- |
-| `probe-only-uri` | IPs whose entire non-local history falls inside a curated list of well-known probe URIs (e.g. `/.well-known/traffic-advice`, `/ip`, `/cdn-cgi/trace`). No minimum hit count — a single request is enough when it's the *only* thing the IP ever did. Tag per IP is the most severe among the probes it hit (malicious > bot), so Cloudflare's traffic-advice disclosures tag `bot` while proxy/SSRF canaries like `/ip` tag `malicious`. Override the URI list via `--probe-uris-file` (JSON: `[{"uri": "...", "tag": "bot|malicious"}, ...]`; default path `$XDG_CONFIG_HOME/caddylogs/probe-uris.json`). Missing at the default path is a silent fallback to built-ins; explicitly passing a missing path is a hard error. |
+| `probe-only-uri` | IPs whose entire non-local history falls inside a curated list of well-known probe URIs (e.g. `/.well-known/traffic-advice`, `/ip`, `/cdn-cgi/trace`). No minimum hit count — a single request is enough when it's the *only* thing the IP ever did. Tag per IP is the most severe among the probes it hit (malicious > bot), so Cloudflare's traffic-advice disclosures tag `bot` while proxy/SSRF canaries like `/ip` tag `malicious`. Entries may be exact paths or SQLite GLOB patterns (`*`, `?`, `[abc]`) — e.g. `/dl/*.uf2` catches distributed firmware-mirror campaigns where each IP grabs one file and disappears. Override the URI list via `--probe-uris-file` (JSON: `[{"uri": "...", "tag": "bot|malicious"}, ...]`; default path `$XDG_CONFIG_HOME/caddylogs/probe-uris.json`). The override replaces the built-in list wholesale, so include any defaults you want to keep. Missing at the default path is a silent fallback to built-ins; explicitly passing a missing path is a hard error. |
 | `root-only-burst` | 4+ hits to `/` in a UTC day OR `/` hits across 2+ distinct days, and no static-asset requests (favicon, robots.txt, and social-card previews don't count). |
 | `cadence-polling` | 7+ inter-request intervals whose coefficient of variation is under 25% with a mean interval ≥ 60s — uptime monitors, cron scrapers, status-page pollers. |
 | `head-only` | 4+ requests, all `HEAD`. |
@@ -270,7 +270,7 @@ into whichever DB is active, so they survive cache invalidation.
 | `--attack-err-rate` | 0.70 | Behavioral threshold: 4xx rate (0..1) to flag an IP |
 | `--attack-min-uri-hits` | 2 | Behavioral threshold: IPs with ≥ N attack-URI hits flagged |
 | `--no-classifiers` | off | Skip the built-in heuristic classifiers at startup (Run buttons in the UI still work) |
-| `--probe-uris-file PATH` | `$XDG_CONFIG_HOME/caddylogs/probe-uris.json` | Override the `probe-only-uri` classifier's URI list. JSON array of `{"uri", "tag"}` objects; tag must be `bot` or `malicious`. Missing at the default path is silent; explicit missing path is an error. |
+| `--probe-uris-file PATH` | `$XDG_CONFIG_HOME/caddylogs/probe-uris.json` | Override the `probe-only-uri` classifier's URI list. JSON array of `{"uri", "tag"}` objects; tag must be `bot` or `malicious`. URI strings may use SQLite GLOB metacharacters (`*`, `?`, `[abc]`) for pattern matches. Replaces the built-ins wholesale (no merge). Missing at the default path is silent; explicit missing path is an error. |
 | `--all` | | `clear-cache` only: delete every cached DB in the cache dir |
 | `--out` | `report.html` | `report` only: output path for the static HTML snapshot |
 
