@@ -110,6 +110,79 @@ function deepCopyFilter(f) {
   };
 }
 
+// --- URL hash <-> state sync ---
+// Filters, view, and sort are encoded in the URL hash so the browser
+// back/forward buttons walk through prior dashboard states and links can
+// share a specific drilldown. localStorage-only prefs (timeMode,
+// panelWidth) deliberately stay out of the hash — they're per-browser
+// preferences, not per-link state.
+//
+// Hash format (URLSearchParams-style, repeated keys for list values):
+//   view=static&sort=bytes
+//   inc.ip=1.2.3.4&inc.ip=5.6.7.8&exc.method=GET&con.uri=admin
+//   from=2026-04-01T00:00:00Z&to=2026-04-29T00:00:00Z
+const VIEWS = ['dynamic', 'static', 'local', 'bots', 'malicious'];
+const SORTS = ['hits', 'bytes'];
+function encodeStateToHash() {
+  const p = new URLSearchParams();
+  if (state.view && state.view !== 'dynamic') p.set('view', state.view);
+  if (state.sortBy && state.sortBy !== 'hits') p.set('sort', state.sortBy);
+  const f = state.filter || {};
+  for (const [dim, vals] of Object.entries(f.include || {})) {
+    for (const v of vals) p.append('inc.' + dim, v);
+  }
+  for (const [dim, vals] of Object.entries(f.exclude || {})) {
+    for (const v of vals) p.append('exc.' + dim, v);
+  }
+  for (const [dim, vals] of Object.entries(f.contains || {})) {
+    for (const v of vals) p.append('con.' + dim, v);
+  }
+  if (f.time_from) p.set('from', f.time_from);
+  if (f.time_to)   p.set('to',   f.time_to);
+  return p.toString();
+}
+function applyHashToState() {
+  const hash = (window.location.hash || '').replace(/^#/, '');
+  const p = new URLSearchParams(hash);
+  state.filter = { include: {}, exclude: {}, contains: {}, time_from: null, time_to: null };
+  const view = p.get('view') || 'dynamic';
+  state.view = VIEWS.includes(view) ? view : 'dynamic';
+  const sort = p.get('sort') || 'hits';
+  state.sortBy = SORTS.includes(sort) ? sort : 'hits';
+  for (const [k, v] of p.entries()) {
+    let bucket = null, dim = null;
+    if      (k.startsWith('inc.')) { bucket = state.filter.include;  dim = k.slice(4); }
+    else if (k.startsWith('exc.')) { bucket = state.filter.exclude;  dim = k.slice(4); }
+    else if (k.startsWith('con.')) { bucket = state.filter.contains; dim = k.slice(4); }
+    if (bucket && dim) {
+      bucket[dim] = bucket[dim] || [];
+      bucket[dim].push(v);
+    }
+  }
+  state.filter.time_from = p.get('from') || null;
+  state.filter.time_to   = p.get('to')   || null;
+  // Reflect view/sort in the toolbar. (Filter chips re-render via refreshAll.)
+  document.querySelectorAll('.view-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.view === state.view);
+  });
+  document.querySelectorAll('.sort-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.sort === state.sortBy);
+  });
+  document.body.dataset.view = state.view;
+}
+// suppressURLSync is set during popstate and initial-load handling so the
+// state→URL sync inside refreshAll() doesn't push the URL we just read
+// back onto the history stack.
+let suppressURLSync = false;
+function syncURLFromState() {
+  if (suppressURLSync) return;
+  const newHash = encodeStateToHash();
+  const curHash = (window.location.hash || '').replace(/^#/, '');
+  if (newHash === curHash) return;
+  const url = newHash ? '#' + newHash : (location.pathname + location.search);
+  history.pushState(null, '', url);
+}
+
 // --- filter chip rendering + mutation ---
 const PRETTY_DIM = {
   ip: 'IP', host: 'host', uri: 'URI', status: 'status', status_class: 'status',
@@ -791,6 +864,7 @@ function viewTable(view) {
 // --- main refresh cycle ---
 let inflight = null;
 async function refreshAll() {
+  syncURLFromState();
   renderChips();
   if (inflight) inflight.abort();
   const ac = new AbortController();
@@ -1412,5 +1486,30 @@ initCollapsibleSection({
   storageKey: 'cl_tags_expanded',
 });
 loadClassifiers();
+
+// Browser back/forward navigates through the filter/view/sort history.
+// suppressURLSync stops the syncURLFromState() at the top of refreshAll
+// from re-pushing the URL we just read. It only needs to cover that
+// synchronous prefix — clearing it before the await window means a
+// concurrent user click that triggers another refreshAll still pushes.
+window.addEventListener('popstate', () => {
+  suppressURLSync = true;
+  applyHashToState();
+  refreshAll();
+  suppressURLSync = false;
+});
+
+// Initial load: pick up filters from the hash (deep links, reload) and
+// normalize the URL to our canonical encoding via replaceState so the
+// first history entry already matches what refreshAll would emit.
+suppressURLSync = true;
+applyHashToState();
 refreshAll();
+const initHash = encodeStateToHash();
+const curHash = (window.location.hash || '').replace(/^#/, '');
+if (initHash !== curHash) {
+  const url = initHash ? '#' + initHash : (location.pathname + location.search);
+  history.replaceState(null, '', url);
+}
+suppressURLSync = false;
 openWS();
