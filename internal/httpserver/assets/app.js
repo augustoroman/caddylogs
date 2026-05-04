@@ -48,9 +48,11 @@ function fmtTs(ts) {
 
 // pickTimelineFormat returns a Date -> string formatter whose granularity
 // matches the total span so labels stay informative without being redundant.
-// Dates outside the current year are suffixed with " YYYY" so a range
-// that straddles a year boundary stays unambiguous. Honors state.timeMode:
-// UTC labels are suffixed with 'Z'; local labels carry no suffix.
+// The shorter formats (HH:MM:SS, HH:MM) prepend "Mon DD" when the bucket
+// isn't today and " YYYY" when it isn't this year — without that, a brushed
+// range from a week ago would just say "14:32" with no anchor. Honors
+// state.timeMode: UTC labels are suffixed with 'Z'; local labels carry no
+// suffix.
 function pickTimelineFormat(spanMs) {
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -62,16 +64,27 @@ function pickTimelineFormat(spanMs) {
   const mi = d => utc ? d.getUTCMinutes()  : d.getMinutes();
   const se = d => utc ? d.getUTCSeconds()  : d.getSeconds();
   const tz = utc ? 'Z' : '';
-  const currentYear = yr(new Date());
+  const today = new Date();
+  const todayYr = yr(today), todayMo = mo(today), todayDa = da(today);
+  // datePrefix tacks a "Mon DD " (and " YYYY" if needed) onto the time
+  // formats so labels stay self-describing when the data isn't from
+  // today. Returns "" when the bucket is today so same-day labels stay
+  // clean.
+  const datePrefix = d => {
+    const sameYear = yr(d) === todayYr;
+    if (sameYear && mo(d) === todayMo && da(d) === todayDa) return '';
+    const base = MONTHS[mo(d)] + ' ' + da(d);
+    return (sameYear ? base : base + ' ' + yr(d)) + ' ';
+  };
   const withYear = (d, base) =>
-    yr(d) === currentYear ? base : base + ' ' + yr(d);
+    yr(d) === todayYr ? base : base + ' ' + yr(d);
   if (spanMs < 2 * 60 * 60 * 1000) {
-    // < 2h: HH:MM:SS
-    return d => pad2(hr(d)) + ':' + pad2(mi(d)) + ':' + pad2(se(d)) + tz;
+    // < 2h: HH:MM:SS, prefixed with date when not today.
+    return d => datePrefix(d) + pad2(hr(d)) + ':' + pad2(mi(d)) + ':' + pad2(se(d)) + tz;
   }
   if (spanMs < 36 * 60 * 60 * 1000) {
-    // < 36h: HH:MM
-    return d => pad2(hr(d)) + ':' + pad2(mi(d)) + tz;
+    // < 36h: HH:MM, prefixed with date when not today.
+    return d => datePrefix(d) + pad2(hr(d)) + ':' + pad2(mi(d)) + tz;
   }
   if (spanMs < 10 * 24 * 60 * 60 * 1000) {
     // < 10d: "Apr 22 14:00"
