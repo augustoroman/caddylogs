@@ -20,6 +20,12 @@ const state = {
   // "last 7 days" means 7 days before the freshest row, not 7 days
   // before wall-clock (which would be empty for historical logs).
   globalLast: null,
+  // When true, the timeline overlays the unfiltered traffic shape for
+  // the same time range as a faint background, so the user can see what
+  // fraction of normal traffic the current filter is selecting.
+  // Persisted in localStorage; off by default since it doubles the
+  // dashboard query cost when on.
+  showBaseline: (typeof localStorage !== 'undefined' && localStorage.getItem('caddylogs.showBaseline') === '1'),
 };
 
 // --- helpers ---
@@ -400,7 +406,7 @@ function niceTicks(max, targetCount) {
   return out;
 }
 
-function renderTimeline(buckets) {
+function renderTimeline(buckets, baselineBuckets) {
   const svg = document.getElementById('timeline-chart');
   const w = svg.clientWidth || 800;
   const h = 180;           // total svg height
@@ -416,7 +422,28 @@ function renderTimeline(buckets) {
   const valueOf = b => useBytes ? b.bytes : b.hits;
   const fmtVal = useBytes ? fmtBytes : fmtInt;
   const valueLabel = useBytes ? 'bytes' : 'hits';
-  const maxVal = Math.max(0, ...buckets.map(valueOf));
+
+  // Baseline alignment is keyed by bucket start time, not array index,
+  // so a small off-by-one between the two queries' bucket boundaries
+  // can't shift the overlay relative to the filtered curve. A baseline
+  // bucket missing from the map (e.g. because the user filter happens
+  // to extend past the baseline range) just renders as zero.
+  const baselineByStart = (baselineBuckets && baselineBuckets.length)
+    ? Object.fromEntries(baselineBuckets.map(b => [b.start, b]))
+    : null;
+  const baselineValueAt = i => {
+    if (!baselineByStart) return 0;
+    const b = baselineByStart[buckets[i].start];
+    return b ? valueOf(b) : 0;
+  };
+  const filteredMax = Math.max(0, ...buckets.map(valueOf));
+  const baselineMax = baselineByStart
+    ? Math.max(0, ...buckets.map((_, i) => baselineValueAt(i)))
+    : 0;
+  // Scale to max(filtered, baseline) so proportions stay honest — a
+  // small-slice filter SHOULD render small under a large baseline,
+  // since "filtered ⊆ baseline" is the comparison we want to convey.
+  const maxVal = Math.max(filteredMax, baselineMax);
   const titleEl = document.getElementById('timeline-title-text');
   if (titleEl) {
     titleEl.textContent = useBytes ? 'Timeline (data per bucket)' : 'Timeline (hits per bucket)';
@@ -466,6 +493,30 @@ function renderTimeline(buckets) {
   // the area shape makes empty intervals legible — a flat baseline
   // section is visibly "no data here", whereas a bars row was just
   // absent.
+
+  // Baseline overlay (when present) — drawn first so the filtered
+  // series sits on top of it. Same x positions as filtered so the
+  // shapes line up; muted styling so it reads as background context
+  // rather than competing for attention.
+  if (baselineByStart) {
+    const yForBaseline = i => chartH - (maxVal > 0 ? (baselineValueAt(i) / maxVal) * (chartH - 4) : 0);
+    const bpts = buckets.map((b, i) => ({ x: xc(i), y: yForBaseline(i) }));
+    const bcurves = monotoneCubicCurves(bpts);
+    const baseAreaD = `M ${bpts[0].x.toFixed(2)} ${chartH}`
+                    + ` L ${bpts[0].x.toFixed(2)} ${bpts[0].y.toFixed(2)}`
+                    + bcurves
+                    + ` L ${bpts[bpts.length - 1].x.toFixed(2)} ${chartH} Z`;
+    const baseArea = document.createElementNS(ns, 'path');
+    baseArea.setAttribute('class', 'tl-area-base');
+    baseArea.setAttribute('d', baseAreaD);
+    svg.appendChild(baseArea);
+    const baseLineD = `M ${bpts[0].x.toFixed(2)} ${bpts[0].y.toFixed(2)}` + bcurves;
+    const baseLine = document.createElementNS(ns, 'path');
+    baseLine.setAttribute('class', 'tl-line-base');
+    baseLine.setAttribute('d', baseLineD);
+    svg.appendChild(baseLine);
+  }
+
   const pts = buckets.map((b, i) => ({ x: xc(i), y: yFor(b) }));
   const curves = monotoneCubicCurves(pts);
 
@@ -615,8 +666,15 @@ function renderTimeline(buckets) {
     rect.setAttribute('width', barW.toFixed(2));
     rect.setAttribute('height', chartH);
     const t = document.createElementNS(ns, 'title');
-    t.textContent = `${fmtTs(b.start)}: ${fmtVal(valueOf(b))} ${valueLabel}` +
-      ` (${fmtInt(b.hits)} hits, ${fmtBytes(b.bytes)}, ${fmtInt(b.visitors)} visitors)`;
+    let tip = `${fmtTs(b.start)}: ${fmtVal(valueOf(b))} ${valueLabel}`;
+    if (baselineByStart) {
+      const baseV = baselineValueAt(i);
+      const filtV = valueOf(b);
+      const pct = baseV > 0 ? (filtV / baseV) * 100 : (filtV > 0 ? 100 : 0);
+      tip += ` / ${fmtVal(baseV)} baseline (${pct.toFixed(1)}%)`;
+    }
+    tip += ` (${fmtInt(b.hits)} hits, ${fmtBytes(b.bytes)}, ${fmtInt(b.visitors)} visitors)`;
+    t.textContent = tip;
     rect.appendChild(t);
     svg.appendChild(rect);
   });
@@ -1114,6 +1172,31 @@ async function refreshAll() {
   const body = { filter: effectiveFilter, topn: state.topN, table, order_by: state.sortBy };
   refreshBreakdown();
   refreshTagList();
+
+  // Baseline request fires in parallel so its latency overlaps the main
+  // dashboard's. "Same time range, view-level filter only" — strips the
+  // user's drilldown filters (include/exclude/contains) but keeps the
+  // view's is_bot/is_local default and the time bounds, so the overlay
+  // answers "what fraction of THIS view's traffic in this window is my
+  // drilldown selecting?"
+  let baselinePromise = null;
+  if (state.showBaseline && table !== 'static') {
+    const baselineFilter = viewFilter({
+      include: {}, exclude: {}, contains: {},
+      time_from: state.filter.time_from,
+      time_to: state.filter.time_to,
+    }, state.view);
+    const baselineBody = { ...body, filter: baselineFilter };
+    baselinePromise = fetch('/api/dashboard', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(baselineBody), signal: ac.signal,
+    }).then(r => r.ok ? r.json() : null).catch(e => {
+      if (e.name !== 'AbortError') console.error('baseline:', e);
+      return null;
+    });
+  }
+
+  let mainDash = null;
   try {
     const url = table === 'static' ? '/api/static' : '/api/dashboard';
     const r = await fetch(url, {
@@ -1121,13 +1204,21 @@ async function refreshAll() {
       body: JSON.stringify(body), signal: ac.signal,
     });
     if (!r.ok) throw new Error(r.status);
-    const dash = await r.json();
-    renderOverview(dash.overview || {});
-    renderStatusClass(dash.status_class || {});
-    renderTimeline(dash.timeline || []);
-    renderPanels(dash.panels || {});
+    mainDash = await r.json();
+    renderOverview(mainDash.overview || {});
+    renderStatusClass(mainDash.status_class || {});
+    // Initial timeline render without baseline so the user sees the main
+    // chart immediately; baseline overlays in once its request returns.
+    renderTimeline(mainDash.timeline || [], null);
+    renderPanels(mainDash.panels || {});
   } catch (e) {
     if (e.name !== 'AbortError') console.error('dashboard:', e);
+  }
+  if (baselinePromise && mainDash) {
+    const baselineDash = await baselinePromise;
+    if (baselineDash && baselineDash.timeline) {
+      renderTimeline(mainDash.timeline || [], baselineDash.timeline);
+    }
   }
   // Refresh rows.
   state.rowsOffset = 0;
@@ -1144,6 +1235,14 @@ function setSort(s) {
   document.querySelectorAll('.sort-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.sort === s);
   });
+  refreshAll();
+}
+
+function setShowBaseline(on) {
+  state.showBaseline = !!on;
+  try { localStorage.setItem('caddylogs.showBaseline', on ? '1' : '0'); } catch {}
+  const btn = document.getElementById('baseline-toggle');
+  if (btn) btn.classList.toggle('active', !!on);
   refreshAll();
 }
 
@@ -1680,6 +1779,11 @@ document.querySelectorAll('.range-btn').forEach(btn => {
     applyRangePreset(parseInt(btn.dataset.days, 10) || 0);
   });
 });
+const baselineBtn = document.getElementById('baseline-toggle');
+if (baselineBtn) {
+  baselineBtn.classList.toggle('active', !!state.showBaseline);
+  baselineBtn.addEventListener('click', () => setShowBaseline(!state.showBaseline));
+}
 document.getElementById('load-static').addEventListener('click', loadStatic);
 document.getElementById('rows-more').addEventListener('click', loadMoreRows);
 document.querySelectorAll('.view-btn').forEach(btn => {
