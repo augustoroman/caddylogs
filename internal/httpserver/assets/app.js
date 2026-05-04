@@ -20,12 +20,13 @@ const state = {
   // "last 7 days" means 7 days before the freshest row, not 7 days
   // before wall-clock (which would be empty for historical logs).
   globalLast: null,
-  // When true, the timeline overlays the unfiltered traffic shape for
-  // the same time range as a faint background, so the user can see what
-  // fraction of normal traffic the current filter is selecting.
-  // Persisted in localStorage; off by default since it doubles the
-  // dashboard query cost when on.
-  showBaseline: (typeof localStorage !== 'undefined' && localStorage.getItem('caddylogs.showBaseline') === '1'),
+  // Pinned filter snapshots overlaid on the timeline for comparison.
+  // Each pin captures view + filter (drilldown) but NOT time range,
+  // so pins follow the current time window — pins are about *what*,
+  // not *when*. Loaded from localStorage on boot; capped at PIN_COLORS
+  // length so each pin gets a distinct color. Each pin = one extra
+  // /api/timeline call per refresh.
+  pins: loadPins(),
 };
 
 // --- helpers ---
@@ -206,6 +207,125 @@ function syncURLFromState() {
   if (newHash === curHash) return;
   const url = newHash ? '#' + newHash : (location.pathname + location.search);
   history.pushState(null, '', url);
+}
+
+// --- pinned filters (timeline overlays) ---
+// PIN_COLORS is the fixed palette. Pins are capped at this length so
+// every active pin gets a distinct color — beyond ~5 the chart turns
+// into a tangle of similar lines and the "compare to N other slices"
+// story stops being legible.
+const PIN_COLORS = ['#f2b95a', '#5ccf7d', '#e07aaa', '#6cd5d5', '#c089e6'];
+
+function loadPins() {
+  try {
+    const raw = (typeof localStorage !== 'undefined') && localStorage.getItem('caddylogs.pins');
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function persistPins() {
+  try { localStorage.setItem('caddylogs.pins', JSON.stringify(state.pins)); } catch {}
+}
+
+// pickPinColor returns the first palette color not already in use, so
+// removing a pin frees its color for the next add. With all colors
+// taken the cap kicks in elsewhere; this just picks the first as a
+// safe fallback.
+function pickPinColor() {
+  const used = new Set((state.pins || []).map(p => p.color));
+  for (const c of PIN_COLORS) {
+    if (!used.has(c)) return c;
+  }
+  return PIN_COLORS[0];
+}
+
+// pinShortLabel produces the chip text — kept tight (≤2 active dims +
+// "+N" overflow) so a row of chips doesn't push the range presets off
+// the panel header. The full filter spec lives in the chip's title
+// attribute via pinDetailedLabel.
+function pinShortLabel(filter, view) {
+  const parts = [];
+  if (view !== 'dynamic') parts.push(view);
+  for (const [dim, vals] of Object.entries(filter.include || {})) {
+    for (const v of vals) parts.push(`${dim}=${truncate(v, 12)}`);
+  }
+  for (const [dim, vals] of Object.entries(filter.exclude || {})) {
+    for (const v of vals) parts.push(`-${dim}=${truncate(v, 12)}`);
+  }
+  for (const [dim, vals] of Object.entries(filter.contains || {})) {
+    for (const v of vals) parts.push(`${dim}∋${truncate(v, 12)}`);
+  }
+  if (parts.length === 0) return view + ' (no filter)';
+  const head = parts.slice(0, 2).join(', ');
+  return parts.length > 2 ? `${head}, +${parts.length - 2}` : head;
+}
+function pinDetailedLabel(filter, view) {
+  const parts = [`view=${view}`];
+  for (const [dim, vals] of Object.entries(filter.include || {})) {
+    for (const v of vals) parts.push(`${dim}=${v}`);
+  }
+  for (const [dim, vals] of Object.entries(filter.exclude || {})) {
+    for (const v of vals) parts.push(`${dim}≠${v}`);
+  }
+  for (const [dim, vals] of Object.entries(filter.contains || {})) {
+    for (const v of vals) parts.push(`${dim}∋${v}`);
+  }
+  return parts.join(', ');
+}
+
+function pinCurrent() {
+  if (state.pins.length >= PIN_COLORS.length) return; // cap reached
+  const filter = deepCopyFilter(state.filter);
+  // Strip time bounds — pins follow the current time window.
+  filter.time_from = null;
+  filter.time_to = null;
+  state.pins.push({
+    id: Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+    view: state.view,
+    filter,
+    color: pickPinColor(),
+  });
+  persistPins();
+  renderPinChips();
+  refreshAll();
+}
+function unpin(id) {
+  state.pins = state.pins.filter(p => p.id !== id);
+  persistPins();
+  renderPinChips();
+  refreshAll();
+}
+
+function renderPinChips() {
+  const el = document.getElementById('pin-chips');
+  if (!el) return;
+  el.innerHTML = '';
+  for (const pin of state.pins) {
+    const chip = document.createElement('span');
+    chip.className = 'pin-chip';
+    chip.title = pinDetailedLabel(pin.filter, pin.view);
+    const sw = document.createElement('span');
+    sw.className = 'pin-sw';
+    sw.style.background = pin.color;
+    chip.appendChild(sw);
+    const txt = document.createElement('span');
+    txt.className = 'pin-lbl';
+    txt.textContent = pinShortLabel(pin.filter, pin.view);
+    chip.appendChild(txt);
+    const x = document.createElement('span');
+    x.className = 'pin-x';
+    x.textContent = '×';
+    x.title = 'remove pin';
+    x.addEventListener('click', (e) => {
+      e.stopPropagation();
+      unpin(pin.id);
+    });
+    chip.appendChild(x);
+    el.appendChild(chip);
+  }
+  const btn = document.getElementById('pin-current');
+  if (btn) btn.disabled = state.pins.length >= PIN_COLORS.length;
 }
 
 // --- filter chip rendering + mutation ---
@@ -406,7 +526,7 @@ function niceTicks(max, targetCount) {
   return out;
 }
 
-function renderTimeline(buckets, baselineBuckets) {
+function renderTimeline(buckets, overlays) {
   const svg = document.getElementById('timeline-chart');
   const w = svg.clientWidth || 800;
   const h = 180;           // total svg height
@@ -423,27 +543,31 @@ function renderTimeline(buckets, baselineBuckets) {
   const fmtVal = useBytes ? fmtBytes : fmtInt;
   const valueLabel = useBytes ? 'bytes' : 'hits';
 
-  // Baseline alignment is keyed by bucket start time, not array index,
-  // so a small off-by-one between the two queries' bucket boundaries
-  // can't shift the overlay relative to the filtered curve. A baseline
-  // bucket missing from the map (e.g. because the user filter happens
-  // to extend past the baseline range) just renders as zero.
-  const baselineByStart = (baselineBuckets && baselineBuckets.length)
-    ? Object.fromEntries(baselineBuckets.map(b => [b.start, b]))
-    : null;
-  const baselineValueAt = i => {
-    if (!baselineByStart) return 0;
-    const b = baselineByStart[buckets[i].start];
+  // Overlay alignment is keyed by bucket start time, not array index,
+  // so a small off-by-one between any overlay's bucket boundaries and
+  // the filtered series can't shift it relative to the main curve.
+  // Buckets missing from an overlay's map (e.g. the overlay's range
+  // doesn't extend that far) render as zero. Each entry carries its
+  // own indexed lookup so every overlay's value can be read at any
+  // filtered bucket position cheaply.
+  const overlayMaps = (overlays || []).map(o => ({
+    color: o.color,
+    label: o.label,
+    byStart: Object.fromEntries((o.buckets || []).map(b => [b.start, b])),
+  }));
+  const overlayValueAt = (om, i) => {
+    const b = om.byStart[buckets[i].start];
     return b ? valueOf(b) : 0;
   };
   const filteredMax = Math.max(0, ...buckets.map(valueOf));
-  const baselineMax = baselineByStart
-    ? Math.max(0, ...buckets.map((_, i) => baselineValueAt(i)))
-    : 0;
-  // Scale to max(filtered, baseline) so proportions stay honest — a
-  // small-slice filter SHOULD render small under a large baseline,
-  // since "filtered ⊆ baseline" is the comparison we want to convey.
-  const maxVal = Math.max(filteredMax, baselineMax);
+  const overlayMaxes = overlayMaps.map(
+    om => Math.max(0, ...buckets.map((_, i) => overlayValueAt(om, i)))
+  );
+  // Scale to max across filtered + every overlay so proportions stay
+  // honest — a small-slice filter overlaid on a large pin SHOULD
+  // render small, since the comparison we want to convey is "this
+  // slice vs that slice", not "both fill the chart".
+  const maxVal = Math.max(filteredMax, ...overlayMaxes);
   const titleEl = document.getElementById('timeline-title-text');
   if (titleEl) {
     titleEl.textContent = useBytes ? 'Timeline (data per bucket)' : 'Timeline (hits per bucket)';
@@ -494,27 +618,29 @@ function renderTimeline(buckets, baselineBuckets) {
   // section is visibly "no data here", whereas a bars row was just
   // absent.
 
-  // Baseline overlay (when present) — drawn first so the filtered
-  // series sits on top of it. Same x positions as filtered so the
-  // shapes line up; muted styling so it reads as background context
-  // rather than competing for attention.
-  if (baselineByStart) {
-    const yForBaseline = i => chartH - (maxVal > 0 ? (baselineValueAt(i) / maxVal) * (chartH - 4) : 0);
-    const bpts = buckets.map((b, i) => ({ x: xc(i), y: yForBaseline(i) }));
-    const bcurves = monotoneCubicCurves(bpts);
-    const baseAreaD = `M ${bpts[0].x.toFixed(2)} ${chartH}`
-                    + ` L ${bpts[0].x.toFixed(2)} ${bpts[0].y.toFixed(2)}`
-                    + bcurves
-                    + ` L ${bpts[bpts.length - 1].x.toFixed(2)} ${chartH} Z`;
-    const baseArea = document.createElementNS(ns, 'path');
-    baseArea.setAttribute('class', 'tl-area-base');
-    baseArea.setAttribute('d', baseAreaD);
-    svg.appendChild(baseArea);
-    const baseLineD = `M ${bpts[0].x.toFixed(2)} ${bpts[0].y.toFixed(2)}` + bcurves;
-    const baseLine = document.createElementNS(ns, 'path');
-    baseLine.setAttribute('class', 'tl-line-base');
-    baseLine.setAttribute('d', baseLineD);
-    svg.appendChild(baseLine);
+  // Pin overlays — drawn first so the filtered series sits on top.
+  // Same x positions as filtered so shapes line up; each overlay's
+  // color comes from the pin and is set inline (CSS handles only
+  // opacity + pointer-events).
+  for (const om of overlayMaps) {
+    const yForOverlay = i => chartH - (maxVal > 0 ? (overlayValueAt(om, i) / maxVal) * (chartH - 4) : 0);
+    const opts = buckets.map((b, i) => ({ x: xc(i), y: yForOverlay(i) }));
+    const ocurves = monotoneCubicCurves(opts);
+    const oAreaD = `M ${opts[0].x.toFixed(2)} ${chartH}`
+                 + ` L ${opts[0].x.toFixed(2)} ${opts[0].y.toFixed(2)}`
+                 + ocurves
+                 + ` L ${opts[opts.length - 1].x.toFixed(2)} ${chartH} Z`;
+    const oArea = document.createElementNS(ns, 'path');
+    oArea.setAttribute('class', 'tl-area-overlay');
+    oArea.setAttribute('style', `fill: ${om.color}`);
+    oArea.setAttribute('d', oAreaD);
+    svg.appendChild(oArea);
+    const oLineD = `M ${opts[0].x.toFixed(2)} ${opts[0].y.toFixed(2)}` + ocurves;
+    const oLine = document.createElementNS(ns, 'path');
+    oLine.setAttribute('class', 'tl-line-overlay');
+    oLine.setAttribute('style', `stroke: ${om.color}`);
+    oLine.setAttribute('d', oLineD);
+    svg.appendChild(oLine);
   }
 
   const pts = buckets.map((b, i) => ({ x: xc(i), y: yFor(b) }));
@@ -666,14 +792,11 @@ function renderTimeline(buckets, baselineBuckets) {
     rect.setAttribute('width', barW.toFixed(2));
     rect.setAttribute('height', chartH);
     const t = document.createElementNS(ns, 'title');
-    let tip = `${fmtTs(b.start)}: ${fmtVal(valueOf(b))} ${valueLabel}`;
-    if (baselineByStart) {
-      const baseV = baselineValueAt(i);
-      const filtV = valueOf(b);
-      const pct = baseV > 0 ? (filtV / baseV) * 100 : (filtV > 0 ? 100 : 0);
-      tip += ` / ${fmtVal(baseV)} baseline (${pct.toFixed(1)}%)`;
+    let tip = `${fmtTs(b.start)}\n  ● ${fmtVal(valueOf(b))} ${valueLabel} (current)`;
+    for (const om of overlayMaps) {
+      tip += `\n  ● ${fmtVal(overlayValueAt(om, i))} ${valueLabel} — ${om.label}`;
     }
-    tip += ` (${fmtInt(b.hits)} hits, ${fmtBytes(b.bytes)}, ${fmtInt(b.visitors)} visitors)`;
+    tip += `\n  (current: ${fmtInt(b.hits)} hits, ${fmtBytes(b.bytes)}, ${fmtInt(b.visitors)} visitors)`;
     t.textContent = tip;
     rect.appendChild(t);
     svg.appendChild(rect);
@@ -1173,28 +1296,28 @@ async function refreshAll() {
   refreshBreakdown();
   refreshTagList();
 
-  // Baseline request fires in parallel so its latency overlaps the main
-  // dashboard's. "Same time range, view-level filter only" — strips the
-  // user's drilldown filters (include/exclude/contains) but keeps the
-  // view's is_bot/is_local default and the time bounds, so the overlay
-  // answers "what fraction of THIS view's traffic in this window is my
-  // drilldown selecting?"
-  let baselinePromise = null;
-  if (state.showBaseline && table !== 'static') {
-    const baselineFilter = viewFilter({
-      include: {}, exclude: {}, contains: {},
-      time_from: state.filter.time_from,
-      time_to: state.filter.time_to,
-    }, state.view);
-    const baselineBody = { filter: baselineFilter, table };
-    baselinePromise = fetch('/api/timeline', {
+  // Pin overlays fire in parallel so their latency overlaps the main
+  // dashboard's. Each pin keeps its captured view + filter (the "what")
+  // but inherits the current time window (the "when") so pinned slices
+  // track as the operator brushes / changes presets. Each pin → one
+  // /api/timeline call.
+  const pinPromises = state.pins.map(pin => {
+    const f = deepCopyFilter(pin.filter);
+    f.time_from = state.filter.time_from;
+    f.time_to = state.filter.time_to;
+    const pinFilter = viewFilter(f, pin.view);
+    const pinBody = { filter: pinFilter, table: viewTable(pin.view) };
+    return fetch('/api/timeline', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(baselineBody), signal: ac.signal,
-    }).then(r => r.ok ? r.json() : null).catch(e => {
-      if (e.name !== 'AbortError') console.error('baseline:', e);
-      return null;
-    });
-  }
+      body: JSON.stringify(pinBody), signal: ac.signal,
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(j => (j && j.timeline) ? { pin, buckets: j.timeline } : null)
+      .catch(e => {
+        if (e.name !== 'AbortError') console.error('pin:', pin.id, e);
+        return null;
+      });
+  });
 
   let mainDash = null;
   try {
@@ -1207,17 +1330,21 @@ async function refreshAll() {
     mainDash = await r.json();
     renderOverview(mainDash.overview || {});
     renderStatusClass(mainDash.status_class || {});
-    // Initial timeline render without baseline so the user sees the main
-    // chart immediately; baseline overlays in once its request returns.
+    // Initial timeline render without overlays so the user sees the
+    // main chart immediately; pin overlays fold in once their requests
+    // return.
     renderTimeline(mainDash.timeline || [], null);
     renderPanels(mainDash.panels || {});
   } catch (e) {
     if (e.name !== 'AbortError') console.error('dashboard:', e);
   }
-  if (baselinePromise && mainDash) {
-    const baselineDash = await baselinePromise;
-    if (baselineDash && baselineDash.timeline) {
-      renderTimeline(mainDash.timeline || [], baselineDash.timeline);
+  if (pinPromises.length > 0 && mainDash) {
+    const settled = await Promise.all(pinPromises);
+    const overlays = settled.filter(Boolean).map(({ pin, buckets }) => ({
+      buckets, color: pin.color, label: pinShortLabel(pin.filter, pin.view),
+    }));
+    if (overlays.length > 0) {
+      renderTimeline(mainDash.timeline || [], overlays);
     }
   }
   // Refresh rows.
@@ -1238,13 +1365,6 @@ function setSort(s) {
   refreshAll();
 }
 
-function setShowBaseline(on) {
-  state.showBaseline = !!on;
-  try { localStorage.setItem('caddylogs.showBaseline', on ? '1' : '0'); } catch {}
-  const btn = document.getElementById('baseline-toggle');
-  if (btn) btn.classList.toggle('active', !!on);
-  refreshAll();
-}
 
 function setTimeMode(m) {
   if (!['local', 'utc'].includes(m)) return;
@@ -1779,11 +1899,9 @@ document.querySelectorAll('.range-btn').forEach(btn => {
     applyRangePreset(parseInt(btn.dataset.days, 10) || 0);
   });
 });
-const baselineBtn = document.getElementById('baseline-toggle');
-if (baselineBtn) {
-  baselineBtn.classList.toggle('active', !!state.showBaseline);
-  baselineBtn.addEventListener('click', () => setShowBaseline(!state.showBaseline));
-}
+const pinBtn = document.getElementById('pin-current');
+if (pinBtn) pinBtn.addEventListener('click', pinCurrent);
+renderPinChips();
 document.getElementById('load-static').addEventListener('click', loadStatic);
 document.getElementById('rows-more').addEventListener('click', loadMoreRows);
 document.querySelectorAll('.view-btn').forEach(btn => {

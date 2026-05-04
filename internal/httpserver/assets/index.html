@@ -60,8 +60,9 @@
 <section id="timeline" class="panel">
   <div class="panel-title">
     <span id="timeline-title-text">Timeline (hits per bucket)</span>
-    <button id="baseline-toggle" class="btn baseline-btn" type="button"
-            title="Overlay the unfiltered traffic shape for the same time range — context for what fraction your filter is selecting">baseline</button>
+    <span id="pin-chips" class="pin-chips"></span>
+    <button id="pin-current" class="btn pin-btn" type="button"
+            title="Pin the current filter as a comparison overlay. Pins keep their `what` (view + filter) but follow the current time window.">+ pin</button>
     <span class="range-presets" id="range-presets">
       <button class="btn range-btn" type="button" data-days="7"   title="Last 7 days">7d</button>
       <button class="btn range-btn" type="button" data-days="30"  title="Last 30 days">30d</button>

@@ -236,18 +236,41 @@ a:hover { text-decoration: underline; }
   padding: 2px 8px; font-size: 10px;
   font-family: var(--mono); letter-spacing: 0.3px;
 }
-.baseline-btn {
+.pin-btn {
   padding: 2px 8px; font-size: 10px;
   font-family: var(--mono); letter-spacing: 0.3px;
 }
-.baseline-btn.active { background: var(--accent); color: #0a1016; border-color: var(--accent); font-weight: 600; }
+.pin-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.pin-chips {
+  display: inline-flex; gap: 4px; flex-wrap: wrap;
+  margin-left: auto;
+}
+.pin-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--bg); border: 1px solid var(--border);
+  padding: 1px 4px 1px 6px; border-radius: 10px;
+  font-size: 10px; font-family: var(--mono);
+  max-width: 140px;
+}
+.pin-sw { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.pin-lbl {
+  color: var(--text); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.pin-x {
+  cursor: pointer; color: var(--muted);
+  padding: 0 3px; border-radius: 8px;
+}
+.pin-x:hover { background: var(--bg-hover); color: var(--text); }
 .tl-bar { fill: var(--accent); opacity: 0.6; }
 .tl-bar:hover { opacity: 1; }
 .tl-area { fill: var(--accent); opacity: 0.18; pointer-events: none; }
 .tl-line { fill: none; stroke: var(--accent); stroke-width: 1.5; opacity: 0.85; pointer-events: none; }
 .tl-dot  { fill: var(--accent); opacity: 0.9; pointer-events: none; }
-.tl-area-base { fill: var(--muted); opacity: 0.12; pointer-events: none; }
-.tl-line-base { fill: none; stroke: var(--muted); stroke-width: 1; opacity: 0.5; pointer-events: none; }
+/* Pin overlay paths take their fill/stroke from inline style (one
+   color per pin); the class only sets opacity + pointer-events. */
+.tl-area-overlay { opacity: 0.13; pointer-events: none; }
+.tl-line-overlay { fill: none; stroke-width: 1; opacity: 0.55; pointer-events: none; }
 .tl-hit  { fill: transparent; }
 .tl-hit:hover { fill: var(--accent); fill-opacity: 0.1; }
 .tl-grid { stroke: var(--border); stroke-width: 1; opacity: 0.5; pointer-events: none; }
