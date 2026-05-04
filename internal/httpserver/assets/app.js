@@ -377,6 +377,61 @@ function renderTimeline(buckets) {
     svg.appendChild(rect);
   });
 
+  const spanMs = (new Date(buckets[buckets.length - 1].start) - new Date(buckets[0].start)) || 1;
+
+  // Boundary markers — three nested layers of decreasing prominence so
+  // the eye can find the calendar structure inside the data:
+  //   Year:  full-height solid divider, always shown (rare even on
+  //          decade-scale views)
+  //   Month: full-height dashed divider, faint; gated at < 3y so a
+  //          long view doesn't get 100+ dashed lines
+  //   Day:   small axis tick, gated at < 30d (else 365 ticks spam)
+  // Each boundary contributes at most one marker — Jan 1 is a year
+  // boundary, not also a month one. Drawn between bars and axis so
+  // dividers overlay data but the baseline still anchors the bottom.
+  // Boundaries respect state.timeMode so a year/month/day flip lines up
+  // with what the labels are showing.
+  const utcMode = inUTC();
+  const yrOf = d => utcMode ? d.getUTCFullYear() : d.getFullYear();
+  const moOf = d => utcMode ? d.getUTCMonth()    : d.getMonth();
+  const daOf = d => utcMode ? d.getUTCDate()     : d.getDate();
+  const showMonthDiv = spanMs < 3 * 365 * 24 * 60 * 60 * 1000;
+  const showDayTick  = spanMs < 30 * 24 * 60 * 60 * 1000;
+  const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  for (let i = 1; i < buckets.length; i++) {
+    const prev = new Date(buckets[i - 1].start);
+    const cur  = new Date(buckets[i].start);
+    const yearChange  = yrOf(prev) !== yrOf(cur);
+    const monthChange = !yearChange  && moOf(prev) !== moOf(cur);
+    const dayChange   = !yearChange  && !monthChange && daOf(prev) !== daOf(cur);
+    const dx = i * barW;
+    if (yearChange) {
+      const line = document.createElementNS(ns, 'line');
+      line.setAttribute('class', 'tl-yr-div');
+      line.setAttribute('x1', dx.toFixed(2)); line.setAttribute('x2', dx.toFixed(2));
+      line.setAttribute('y1', 0);             line.setAttribute('y2', chartH);
+      const lt = document.createElementNS(ns, 'title');
+      lt.textContent = `${yrOf(cur)} starts`;
+      line.appendChild(lt);
+      svg.appendChild(line);
+    } else if (monthChange && showMonthDiv) {
+      const line = document.createElementNS(ns, 'line');
+      line.setAttribute('class', 'tl-mo-div');
+      line.setAttribute('x1', dx.toFixed(2)); line.setAttribute('x2', dx.toFixed(2));
+      line.setAttribute('y1', 0);             line.setAttribute('y2', chartH);
+      const lt = document.createElementNS(ns, 'title');
+      lt.textContent = `${MONTH_NAMES[moOf(cur)]} ${yrOf(cur)} starts`;
+      line.appendChild(lt);
+      svg.appendChild(line);
+    } else if (dayChange && showDayTick) {
+      const dt = document.createElementNS(ns, 'line');
+      dt.setAttribute('class', 'tl-day-tick');
+      dt.setAttribute('x1', dx.toFixed(2)); dt.setAttribute('x2', dx.toFixed(2));
+      dt.setAttribute('y1', chartH);        dt.setAttribute('y2', chartH + 6);
+      svg.appendChild(dt);
+    }
+  }
+
   // Axis baseline + date ticks.
   const axis = document.createElementNS(ns, 'line');
   axis.setAttribute('class', 'tl-axis');
@@ -384,7 +439,6 @@ function renderTimeline(buckets) {
   axis.setAttribute('y1', chartH); axis.setAttribute('y2', chartH);
   svg.appendChild(axis);
 
-  const spanMs = (new Date(buckets[buckets.length - 1].start) - new Date(buckets[0].start)) || 1;
   const fmt = pickTimelineFormat(spanMs);
   // Aim for roughly one label per ~130 logical px, min 2, max 8.
   const targetTicks = Math.min(8, Math.max(2, Math.floor(w / 130)));
