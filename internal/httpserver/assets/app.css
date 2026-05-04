@@ -238,6 +238,11 @@ a:hover { text-decoration: underline; }
 }
 .tl-bar { fill: var(--accent); opacity: 0.6; }
 .tl-bar:hover { opacity: 1; }
+.tl-area { fill: var(--accent); opacity: 0.18; pointer-events: none; }
+.tl-line { fill: none; stroke: var(--accent); stroke-width: 1.5; opacity: 0.85; pointer-events: none; }
+.tl-dot  { fill: var(--accent); opacity: 0.9; pointer-events: none; }
+.tl-hit  { fill: transparent; }
+.tl-hit:hover { fill: var(--accent); fill-opacity: 0.1; }
 .tl-brush { fill: var(--warn); opacity: 0.18; }
 .tl-axis { stroke: var(--border); stroke-width: 1; }
 .tl-tick { stroke: var(--muted); stroke-width: 1; }

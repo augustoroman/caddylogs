@@ -358,24 +358,56 @@ function renderTimeline(buckets) {
   }
   const barW = Math.max(1, w / buckets.length);
   const ns = 'http://www.w3.org/2000/svg';
+
+  // Visualization is a soft filled area + line + dot markers tracing
+  // the chosen metric. Reads better than bars at high bucket counts
+  // (no aliasing stripes where bars are sub-pixel) and an area shape
+  // makes empty intervals legible — a flat baseline section is visibly
+  // "no data here", whereas the equivalent bars row was just absent.
+  // maxVal=0 happens when every bucket is empty (e.g. a filter range
+  // with no data); skip the height math so we don't divide by zero.
+  const xc = i => i * barW + barW / 2;
+  const yFor = b => chartH - (maxVal > 0 ? (valueOf(b) / maxVal) * (chartH - 4) : 0);
+
+  // Area path: anchor at first point's x on the baseline, trace up
+  // through all data points, drop back to baseline at the last point.
+  // Anchoring to the first/last data x (not 0/w) avoids artificial
+  // ramps from the chart edges to the first bucket center.
+  let areaD = `M ${xc(0).toFixed(2)} ${chartH}`;
   buckets.forEach((b, i) => {
-    const x = i * barW;
-    // maxVal=0 means every bucket is empty (e.g. a filter range with no
-    // data); skip the height math so we don't divide by zero. The bar
-    // still draws at height 0 so brushing the empty area still works.
-    const bh = maxVal > 0 ? (valueOf(b) / maxVal) * (chartH - 4) : 0;
-    const rect = document.createElementNS(ns, 'rect');
-    rect.setAttribute('class', 'tl-bar');
-    rect.setAttribute('x', x.toFixed(2));
-    rect.setAttribute('y', (chartH - bh).toFixed(2));
-    rect.setAttribute('width', Math.max(1, barW - 1).toFixed(2));
-    rect.setAttribute('height', bh.toFixed(2));
-    const t = document.createElementNS(ns, 'title');
-    t.textContent = `${fmtTs(b.start)}: ${fmtVal(valueOf(b))} ${valueLabel}` +
-      ` (${fmtInt(b.hits)} hits, ${fmtBytes(b.bytes)}, ${fmtInt(b.visitors)} visitors)`;
-    rect.appendChild(t);
-    svg.appendChild(rect);
+    areaD += ` L ${xc(i).toFixed(2)} ${yFor(b).toFixed(2)}`;
   });
+  areaD += ` L ${xc(buckets.length - 1).toFixed(2)} ${chartH} Z`;
+  const area = document.createElementNS(ns, 'path');
+  area.setAttribute('class', 'tl-area');
+  area.setAttribute('d', areaD);
+  svg.appendChild(area);
+
+  // Line path: just the data trace, no fill.
+  let lineD = '';
+  buckets.forEach((b, i) => {
+    lineD += (i === 0 ? 'M ' : ' L ') + xc(i).toFixed(2) + ' ' + yFor(b).toFixed(2);
+  });
+  const line = document.createElementNS(ns, 'path');
+  line.setAttribute('class', 'tl-line');
+  line.setAttribute('d', lineD);
+  svg.appendChild(line);
+
+  // Dot markers — only when buckets are sparse enough that the dots
+  // read as distinct points (above ~60 they coalesce into a stripe and
+  // just add visual noise). Empty buckets get no dot so the baseline
+  // isn't littered with markers that aren't real data.
+  if (buckets.length <= 60) {
+    buckets.forEach((b, i) => {
+      if (valueOf(b) === 0) return;
+      const c = document.createElementNS(ns, 'circle');
+      c.setAttribute('class', 'tl-dot');
+      c.setAttribute('cx', xc(i).toFixed(2));
+      c.setAttribute('cy', yFor(b).toFixed(2));
+      c.setAttribute('r', 2);
+      svg.appendChild(c);
+    });
+  }
 
   const spanMs = (new Date(buckets[buckets.length - 1].start) - new Date(buckets[0].start)) || 1;
 
@@ -468,6 +500,27 @@ function renderTimeline(buckets) {
     label.textContent = fmt(new Date(buckets[i].start));
     svg.appendChild(label);
   });
+
+  // Per-bucket transparent hit rects for tooltips + column highlight on
+  // hover. Drawn last so they sit on top of every visual layer; the
+  // area/line/dots have pointer-events: none in CSS so the cursor
+  // reaches the rect underneath. The rects are full chart-height so the
+  // bucket "owns" its column, not just the area below the line.
+  buckets.forEach((b, i) => {
+    const x = i * barW;
+    const rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('class', 'tl-hit');
+    rect.setAttribute('x', x.toFixed(2));
+    rect.setAttribute('y', 0);
+    rect.setAttribute('width', barW.toFixed(2));
+    rect.setAttribute('height', chartH);
+    const t = document.createElementNS(ns, 'title');
+    t.textContent = `${fmtTs(b.start)}: ${fmtVal(valueOf(b))} ${valueLabel}` +
+      ` (${fmtInt(b.hits)} hits, ${fmtBytes(b.bytes)}, ${fmtInt(b.visitors)} visitors)`;
+    rect.appendChild(t);
+    svg.appendChild(rect);
+  });
+
   // Brush overlay for range selection. Once the mousedown fires we install
   // mousemove/mouseup listeners on the document so the drag follows the
   // cursor even when it leaves the SVG (which matters when the user wants
