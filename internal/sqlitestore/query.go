@@ -242,14 +242,19 @@ func topnOrderBy(q backend.Query) string {
 }
 
 func (s *Store) queryTimeline(ctx context.Context, table, where string, args []any, q backend.Query) (*backend.Result, error) {
-	// Resolve the timeline range. An explicit time filter wins so a
-	// drilldown inside a wider window stays visible in context (one
-	// hit inside a "last 30 days" filter shouldn't auto-zoom to a
-	// single second). When a side is unset we fall back to the data's
-	// MIN/MAX so an unfiltered view still hugs the data tightly.
+	// Resolve the timeline range. The principle: any time filter the
+	// user pinned is the anchor — a partially open filter ("last 30
+	// days" leaves time_to null) should NOT collapse to data extents
+	// on the open side, otherwise a single hit inside that window auto-
+	// zooms to one second and defeats the filter's whole purpose. So
+	// only a fully unbounded filter falls back to data's MIN/MAX; with
+	// any side pinned the open side defaults to "now" on the right (the
+	// natural reading of "last N days") and to data-min on the left
+	// (no preset emits a left-open filter, but if one shows up we'd
+	// rather hug the data than bucketize from the unix epoch).
 	spanFrom := q.Filter.TimeFrom
 	spanTo := q.Filter.TimeTo
-	if spanFrom.IsZero() || spanTo.IsZero() {
+	if spanFrom.IsZero() && spanTo.IsZero() {
 		var minTs, maxTs int64
 		row := s.db.QueryRowContext(ctx,
 			fmt.Sprintf(`SELECT COALESCE(MIN(ts),0), COALESCE(MAX(ts),0) FROM %s%s`, table, where),
@@ -257,18 +262,27 @@ func (s *Store) queryTimeline(ctx context.Context, table, where string, args []a
 		if err := row.Scan(&minTs, &maxTs); err != nil {
 			return nil, err
 		}
-		// No matching data: nothing meaningful to bucket. The MIN/MAX
-		// query already honors the WHERE clause (including any pinned
-		// side of the time filter), so a zero result here covers the
-		// cases where the filter is partially open and finds nothing.
 		if maxTs == 0 {
 			return &backend.Result{Kind: backend.KindTimeline}, nil
 		}
-		if spanFrom.IsZero() {
-			spanFrom = time.Unix(0, minTs).UTC()
-		}
+		spanFrom = time.Unix(0, minTs).UTC()
+		spanTo = time.Unix(0, maxTs).UTC()
+	} else {
 		if spanTo.IsZero() {
-			spanTo = time.Unix(0, maxTs).UTC()
+			spanTo = time.Now().UTC()
+		}
+		if spanFrom.IsZero() {
+			var minTs int64
+			row := s.db.QueryRowContext(ctx,
+				fmt.Sprintf(`SELECT COALESCE(MIN(ts),0) FROM %s%s`, table, where),
+				args...)
+			if err := row.Scan(&minTs); err != nil {
+				return nil, err
+			}
+			if minTs == 0 {
+				return &backend.Result{Kind: backend.KindTimeline}, nil
+			}
+			spanFrom = time.Unix(0, minTs).UTC()
 		}
 	}
 	if !spanTo.After(spanFrom) {
