@@ -26,10 +26,16 @@ const state = {
 function fmtInt(n) { return (n || 0).toLocaleString(); }
 function fmtBytes(n) {
   if (!n) return '0 B';
-  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  // SI units (powers of 1000) rather than IEC binary (KiB/MiB) — saves
+  // a character per label, which matters for the timeline's Y-axis
+  // gutter, and the precision difference (~2.4% at MB) is irrelevant
+  // for log analytics. Trailing .0 is stripped so exact niceTicks
+  // values render as "1 MB" rather than "1.0 MB".
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
   let i = 0; let v = n;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return v.toFixed(v < 10 ? 1 : 0) + ' ' + u[i];
+  while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }
+  const s = v < 10 ? v.toFixed(1) : v.toFixed(0);
+  return s.replace(/\.0$/, '') + ' ' + u[i];
 }
 function fmtDuration(ms) {
   if (ms == null) return '';
@@ -419,8 +425,9 @@ function renderTimeline(buckets) {
   // positions in the chart area offsets by it; the brush handler at
   // the bottom maps client-x back to bucket index using the same
   // offset so a click in the label gutter clamps to bucket 0 instead
-  // of selecting nothing.
-  const AXIS_W = 40;
+  // of selecting nothing. 44px fits worst-case SI labels like "999 KB"
+  // and "1.5 MB" with a couple px of breathing room.
+  const AXIS_W = 44;
   const chartW = Math.max(1, w - AXIS_W);
   const barW = chartW / buckets.length;
   const ns = 'http://www.w3.org/2000/svg';
@@ -482,11 +489,13 @@ function renderTimeline(buckets) {
   line.setAttribute('d', lineD);
   svg.appendChild(line);
 
-  // Dot markers — only when buckets are sparse enough that the dots
-  // read as distinct points (above ~60 they coalesce into a stripe and
-  // just add visual noise). Empty buckets get no dot so the baseline
-  // isn't littered with markers that aren't real data.
-  if (buckets.length <= 60) {
+  // Dot markers — only when buckets are spaced widely enough that the
+  // dots read as distinct points (with r=2, anything below ~5px barW
+  // makes them visually merge). Bucket count alone is the wrong gate:
+  // alignment overhead can push e.g. a 30d view from 60 to 61 buckets
+  // and silently drop the dots. Empty buckets get no dot so the
+  // baseline isn't littered with markers that aren't real data.
+  if (barW >= 5) {
     buckets.forEach((b, i) => {
       if (valueOf(b) === 0) return;
       const c = document.createElementNS(ns, 'circle');
