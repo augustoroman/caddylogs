@@ -344,12 +344,26 @@ function renderTimeline(buckets) {
   svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
   svg.innerHTML = '';
   if (!buckets || buckets.length === 0) return;
-  const maxHits = Math.max(...buckets.map(b => b.hits));
+  // Bar height tracks whichever metric the global hits/data toggle is
+  // sorting on, so the timeline visualization stays in sync with the
+  // panels' primary column. Tooltip carries both regardless.
+  const useBytes = state.sortBy === 'bytes';
+  const valueOf = b => useBytes ? b.bytes : b.hits;
+  const fmtVal = useBytes ? fmtBytes : fmtInt;
+  const valueLabel = useBytes ? 'bytes' : 'hits';
+  const maxVal = Math.max(0, ...buckets.map(valueOf));
+  const titleEl = document.getElementById('timeline-title-text');
+  if (titleEl) {
+    titleEl.textContent = useBytes ? 'Timeline (data per bucket)' : 'Timeline (hits per bucket)';
+  }
   const barW = Math.max(1, w / buckets.length);
   const ns = 'http://www.w3.org/2000/svg';
   buckets.forEach((b, i) => {
     const x = i * barW;
-    const bh = (b.hits / maxHits) * (chartH - 4);
+    // maxVal=0 means every bucket is empty (e.g. a filter range with no
+    // data); skip the height math so we don't divide by zero. The bar
+    // still draws at height 0 so brushing the empty area still works.
+    const bh = maxVal > 0 ? (valueOf(b) / maxVal) * (chartH - 4) : 0;
     const rect = document.createElementNS(ns, 'rect');
     rect.setAttribute('class', 'tl-bar');
     rect.setAttribute('x', x.toFixed(2));
@@ -357,7 +371,8 @@ function renderTimeline(buckets) {
     rect.setAttribute('width', Math.max(1, barW - 1).toFixed(2));
     rect.setAttribute('height', bh.toFixed(2));
     const t = document.createElementNS(ns, 'title');
-    t.textContent = `${fmtTs(b.start)}: ${fmtInt(b.hits)} hits, ${fmtInt(b.visitors)} visitors`;
+    t.textContent = `${fmtTs(b.start)}: ${fmtVal(valueOf(b))} ${valueLabel}` +
+      ` (${fmtInt(b.hits)} hits, ${fmtBytes(b.bytes)}, ${fmtInt(b.visitors)} visitors)`;
     rect.appendChild(t);
     svg.appendChild(rect);
   });
