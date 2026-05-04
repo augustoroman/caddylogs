@@ -335,6 +335,65 @@ function renderStatusClass(sc) {
   }
 }
 
+// monotoneCubicCurves returns the SVG cubic Bézier "C" segments tracing
+// pts in order. Tangents come from Fritsch-Carlson monotone Hermite
+// interpolation, which guarantees the curve doesn't overshoot — plain
+// Catmull-Rom would dip below the baseline before/after a sharp spike,
+// looking like negative traffic. Returns just the C-segments (no
+// leading M) so callers compose with their own move/anchor commands
+// for line vs. area paths.
+function monotoneCubicCurves(pts) {
+  const n = pts.length;
+  if (n < 2) return '';
+  const d = new Array(n - 1);
+  for (let i = 0; i < n - 1; i++) {
+    d[i] = (pts[i + 1].y - pts[i].y) / (pts[i + 1].x - pts[i].x);
+  }
+  const m = new Array(n);
+  m[0] = d[0];
+  m[n - 1] = d[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    if (d[i - 1] * d[i] <= 0) {
+      m[i] = 0;
+    } else {
+      m[i] = (d[i - 1] + d[i]) / 2;
+      const lim = 3 * Math.min(Math.abs(d[i - 1]), Math.abs(d[i]));
+      if (Math.abs(m[i]) > lim) m[i] = m[i] > 0 ? lim : -lim;
+    }
+  }
+  let s = '';
+  for (let i = 0; i < n - 1; i++) {
+    const dx = pts[i + 1].x - pts[i].x;
+    const c1x = pts[i].x + dx / 3;
+    const c1y = pts[i].y + (m[i] * dx) / 3;
+    const c2x = pts[i + 1].x - dx / 3;
+    const c2y = pts[i + 1].y - (m[i + 1] * dx) / 3;
+    s += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)},`
+       + ` ${c2x.toFixed(2)} ${c2y.toFixed(2)},`
+       + ` ${pts[i + 1].x.toFixed(2)} ${pts[i + 1].y.toFixed(2)}`;
+  }
+  return s;
+}
+
+// niceTicks returns ~targetCount round-number tick values from 0 up to
+// max, using the standard 1/2/5 × 10^k scheme so steps read as nice
+// (1, 2, 5, 10, 20, 50, …) rather than e.g. "1.27, 2.54, …". Used to
+// drive the timeline's Y-axis gridlines and labels.
+function niceTicks(max, targetCount) {
+  if (max <= 0 || targetCount <= 0) return [0];
+  const rough = max / targetCount;
+  const exp = Math.pow(10, Math.floor(Math.log10(rough)));
+  const norm = rough / exp;
+  let step;
+  if (norm < 1.5) step = 1 * exp;
+  else if (norm < 3) step = 2 * exp;
+  else if (norm < 7) step = 5 * exp;
+  else step = 10 * exp;
+  const out = [];
+  for (let v = 0; v <= max + step / 2; v += step) out.push(v);
+  return out;
+}
+
 function renderTimeline(buckets) {
   const svg = document.getElementById('timeline-chart');
   const w = svg.clientWidth || 800;
@@ -356,38 +415,68 @@ function renderTimeline(buckets) {
   if (titleEl) {
     titleEl.textContent = useBytes ? 'Timeline (data per bucket)' : 'Timeline (hits per bucket)';
   }
-  const barW = Math.max(1, w / buckets.length);
+  // AXIS_W reserves a left margin for Y-axis labels. Everything that
+  // positions in the chart area offsets by it; the brush handler at
+  // the bottom maps client-x back to bucket index using the same
+  // offset so a click in the label gutter clamps to bucket 0 instead
+  // of selecting nothing.
+  const AXIS_W = 40;
+  const chartW = Math.max(1, w - AXIS_W);
+  const barW = chartW / buckets.length;
   const ns = 'http://www.w3.org/2000/svg';
-
-  // Visualization is a soft filled area + line + dot markers tracing
-  // the chosen metric. Reads better than bars at high bucket counts
-  // (no aliasing stripes where bars are sub-pixel) and an area shape
-  // makes empty intervals legible — a flat baseline section is visibly
-  // "no data here", whereas the equivalent bars row was just absent.
-  // maxVal=0 happens when every bucket is empty (e.g. a filter range
-  // with no data); skip the height math so we don't divide by zero.
-  const xc = i => i * barW + barW / 2;
+  const xc = i => AXIS_W + i * barW + barW / 2;
   const yFor = b => chartH - (maxVal > 0 ? (valueOf(b) / maxVal) * (chartH - 4) : 0);
 
-  // Area path: anchor at first point's x on the baseline, trace up
-  // through all data points, drop back to baseline at the last point.
-  // Anchoring to the first/last data x (not 0/w) avoids artificial
-  // ramps from the chart edges to the first bucket center.
-  let areaD = `M ${xc(0).toFixed(2)} ${chartH}`;
-  buckets.forEach((b, i) => {
-    areaD += ` L ${xc(i).toFixed(2)} ${yFor(b).toFixed(2)}`;
-  });
-  areaD += ` L ${xc(buckets.length - 1).toFixed(2)} ${chartH} Z`;
+  // Y-axis: nice round-number gridlines + labels. Drawn first so data
+  // overlays them. The 0 line is omitted here because the X-axis
+  // baseline drawn later already serves that role; without skipping
+  // we'd paint two lines on top of each other. maxVal=0 (empty filter
+  // range) skips ticks entirely — a single "0" label adds nothing.
+  if (maxVal > 0) {
+    const yToPx = v => chartH - (v / maxVal) * (chartH - 4);
+    for (const t of niceTicks(maxVal, 4)) {
+      const ty = yToPx(t);
+      if (t > 0) {
+        const grid = document.createElementNS(ns, 'line');
+        grid.setAttribute('class', 'tl-grid');
+        grid.setAttribute('x1', AXIS_W); grid.setAttribute('x2', w);
+        grid.setAttribute('y1', ty.toFixed(2)); grid.setAttribute('y2', ty.toFixed(2));
+        svg.appendChild(grid);
+      }
+      const lbl = document.createElementNS(ns, 'text');
+      lbl.setAttribute('class', 'tl-yaxis-label');
+      lbl.setAttribute('x', AXIS_W - 4);
+      lbl.setAttribute('y', (ty + 3).toFixed(2));
+      lbl.setAttribute('text-anchor', 'end');
+      lbl.textContent = fmtVal(t);
+      svg.appendChild(lbl);
+    }
+  }
+
+  // Visualization is a smoothed filled area + line + dot markers
+  // tracing the chosen metric. Smoothing uses Fritsch-Carlson monotone
+  // cubic interpolation so spikes don't overshoot the baseline, and
+  // the area shape makes empty intervals legible — a flat baseline
+  // section is visibly "no data here", whereas a bars row was just
+  // absent.
+  const pts = buckets.map((b, i) => ({ x: xc(i), y: yFor(b) }));
+  const curves = monotoneCubicCurves(pts);
+
+  // Area path: anchor at first point's x on the baseline, line up to
+  // the first data point, follow the curves, drop to baseline at the
+  // last point. Anchoring to first/last data x (not chart edges)
+  // avoids artificial ramps from edge to first bucket center.
+  const areaD = `M ${pts[0].x.toFixed(2)} ${chartH}`
+              + ` L ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`
+              + curves
+              + ` L ${pts[pts.length - 1].x.toFixed(2)} ${chartH} Z`;
   const area = document.createElementNS(ns, 'path');
   area.setAttribute('class', 'tl-area');
   area.setAttribute('d', areaD);
   svg.appendChild(area);
 
-  // Line path: just the data trace, no fill.
-  let lineD = '';
-  buckets.forEach((b, i) => {
-    lineD += (i === 0 ? 'M ' : ' L ') + xc(i).toFixed(2) + ' ' + yFor(b).toFixed(2);
-  });
+  // Line path: just the smoothed trace, no fill.
+  const lineD = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}` + curves;
   const line = document.createElementNS(ns, 'path');
   line.setAttribute('class', 'tl-line');
   line.setAttribute('d', lineD);
@@ -402,8 +491,8 @@ function renderTimeline(buckets) {
       if (valueOf(b) === 0) return;
       const c = document.createElementNS(ns, 'circle');
       c.setAttribute('class', 'tl-dot');
-      c.setAttribute('cx', xc(i).toFixed(2));
-      c.setAttribute('cy', yFor(b).toFixed(2));
+      c.setAttribute('cx', pts[i].x.toFixed(2));
+      c.setAttribute('cy', pts[i].y.toFixed(2));
       c.setAttribute('r', 2);
       svg.appendChild(c);
     });
@@ -436,7 +525,7 @@ function renderTimeline(buckets) {
     const yearChange  = yrOf(prev) !== yrOf(cur);
     const monthChange = !yearChange  && moOf(prev) !== moOf(cur);
     const dayChange   = !yearChange  && !monthChange && daOf(prev) !== daOf(cur);
-    const dx = i * barW;
+    const dx = AXIS_W + i * barW;
     if (yearChange) {
       const line = document.createElementNS(ns, 'line');
       line.setAttribute('class', 'tl-yr-div');
@@ -464,10 +553,11 @@ function renderTimeline(buckets) {
     }
   }
 
-  // Axis baseline + date ticks.
+  // Axis baseline + date ticks. Baseline starts at AXIS_W so it doesn't
+  // run under the Y-axis label gutter.
   const axis = document.createElementNS(ns, 'line');
   axis.setAttribute('class', 'tl-axis');
-  axis.setAttribute('x1', 0); axis.setAttribute('x2', w);
+  axis.setAttribute('x1', AXIS_W); axis.setAttribute('x2', w);
   axis.setAttribute('y1', chartH); axis.setAttribute('y2', chartH);
   svg.appendChild(axis);
 
@@ -481,7 +571,7 @@ function renderTimeline(buckets) {
     if (indices.length === 0 || indices[indices.length - 1] !== idx) indices.push(idx);
   }
   indices.forEach((i, k) => {
-    const bx = i * barW + barW / 2;
+    const bx = xc(i);
     const tick = document.createElementNS(ns, 'line');
     tick.setAttribute('class', 'tl-tick');
     tick.setAttribute('x1', bx); tick.setAttribute('x2', bx);
@@ -489,12 +579,13 @@ function renderTimeline(buckets) {
     svg.appendChild(tick);
     const label = document.createElementNS(ns, 'text');
     label.setAttribute('class', 'tl-label');
-    // Keep first/last labels inside the viewport so they aren't clipped.
+    // Keep first/last labels inside the chart area so they aren't clipped
+    // and don't run into the Y-axis gutter on the left.
     let anchor = 'middle';
     if (k === 0) anchor = 'start';
     else if (k === indices.length - 1) anchor = 'end';
     label.setAttribute('text-anchor', anchor);
-    const lx = anchor === 'start' ? 2 : anchor === 'end' ? w - 2 : bx;
+    const lx = anchor === 'start' ? AXIS_W + 2 : anchor === 'end' ? w - 2 : bx;
     label.setAttribute('x', lx);
     label.setAttribute('y', chartH + 15);
     label.textContent = fmt(new Date(buckets[i].start));
@@ -507,7 +598,7 @@ function renderTimeline(buckets) {
   // reaches the rect underneath. The rects are full chart-height so the
   // bucket "owns" its column, not just the area below the line.
   buckets.forEach((b, i) => {
-    const x = i * barW;
+    const x = AXIS_W + i * barW;
     const rect = document.createElementNS(ns, 'rect');
     rect.setAttribute('class', 'tl-hit');
     rect.setAttribute('x', x.toFixed(2));
@@ -528,8 +619,13 @@ function renderTimeline(buckets) {
   // drag past the right edge still commits "up to the most recent bucket".
   const toBucketIdx = (clientX) => {
     const r = svg.getBoundingClientRect();
-    const x = clientX - r.left;
-    return Math.max(0, Math.min(buckets.length - 1, Math.floor((x / r.width) * buckets.length)));
+    // Strip the Y-axis label gutter (left AXIS_W px) before mapping to a
+    // bucket. r.width already matches viewBox w 1:1 since we set
+    // viewBox from clientWidth on render. A click in the gutter clamps
+    // to bucket 0 via the Math.max below.
+    const chartPx = Math.max(1, r.width - AXIS_W);
+    const x = clientX - r.left - AXIS_W;
+    return Math.max(0, Math.min(buckets.length - 1, Math.floor((x / chartPx) * buckets.length)));
   };
   // Use .onmousedown= (not addEventListener) because renderTimeline
   // runs on every refreshAll and the <svg> element is the same static
@@ -551,7 +647,7 @@ function renderTimeline(buckets) {
       const cur = toBucketIdx(ev.clientX);
       const lo = Math.min(start, cur);
       const hi = Math.max(start, cur);
-      brushEl.setAttribute('x', (lo * barW).toFixed(2));
+      brushEl.setAttribute('x', (AXIS_W + lo * barW).toFixed(2));
       brushEl.setAttribute('width', ((hi - lo + 1) * barW).toFixed(2));
     };
     const onUp = (ev) => {

@@ -243,6 +243,12 @@ a:hover { text-decoration: underline; }
 .tl-dot  { fill: var(--accent); opacity: 0.9; pointer-events: none; }
 .tl-hit  { fill: transparent; }
 .tl-hit:hover { fill: var(--accent); fill-opacity: 0.1; }
+.tl-grid { stroke: var(--border); stroke-width: 1; opacity: 0.5; pointer-events: none; }
+.tl-yaxis-label {
+  fill: var(--muted);
+  font-family: var(--mono); font-size: 10px;
+  pointer-events: none;
+}
 .tl-brush { fill: var(--warn); opacity: 0.18; }
 .tl-axis { stroke: var(--border); stroke-width: 1; }
 .tl-tick { stroke: var(--muted); stroke-width: 1; }
