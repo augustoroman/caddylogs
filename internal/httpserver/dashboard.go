@@ -141,6 +141,37 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
+// handleTimeline answers timeline-only requests. It exists as a cheap
+// alternative to /api/dashboard for clients that need the bucket
+// series alone (e.g. the baseline overlay), avoiding the per-refresh
+// cost of the panel + overview + status_class fanouts those clients
+// already have data for. Reuses the same request/filter shape so the
+// UI can construct one with the existing helpers.
+func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
+	req, err := decodeDashboardRequest(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Table == "" {
+		req.Table = backend.TableDynamic
+	}
+	s.applyDefaults(&req.Filter, req.Table)
+	out, err := s.store.Query(r.Context(), backend.Query{
+		Table: req.Table, Kind: backend.KindTimeline,
+		Filter: req.Filter, Bucket: req.Bucket,
+	})
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	timeline := out.Timeline
+	if timeline == nil {
+		timeline = []backend.Bucket{} // keep wire shape an array, never null
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"timeline": timeline})
+}
+
 // handleStatic answers the "Load static asset stats" button. It runs the
 // dashboard fanout against the static table; the UI renders a smaller panel
 // set for it.

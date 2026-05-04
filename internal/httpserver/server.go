@@ -124,6 +124,7 @@ func New(store backend.Store, assets fs.FS, defaults DefaultFilter) *Server {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/dashboard", s.handleDashboard)
+	mux.HandleFunc("/api/timeline", s.handleTimeline)
 	mux.HandleFunc("/api/query", s.handleQuery)
 	mux.HandleFunc("/api/static", s.handleStatic)
 	mux.HandleFunc("/api/panel", s.handlePanel)

@@ -1186,8 +1186,8 @@ async function refreshAll() {
       time_from: state.filter.time_from,
       time_to: state.filter.time_to,
     }, state.view);
-    const baselineBody = { ...body, filter: baselineFilter };
-    baselinePromise = fetch('/api/dashboard', {
+    const baselineBody = { filter: baselineFilter, table };
+    baselinePromise = fetch('/api/timeline', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(baselineBody), signal: ac.signal,
     }).then(r => r.ok ? r.json() : null).catch(e => {
