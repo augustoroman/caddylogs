@@ -240,13 +240,23 @@ function pickPinColor() {
   return PIN_COLORS[0];
 }
 
+// PIN_VIEW_LABELS maps the internal view id to the user-facing name
+// shown on the toolbar button so chip text matches the UI vocabulary
+// rather than the SQL one (e.g. "dynamic" → "Real").
+const PIN_VIEW_LABELS = {
+  dynamic: 'Real', static: 'Static', local: 'Local',
+  bots: 'Bots', malicious: 'Malicious',
+};
+
 // pinShortLabel produces the chip text — kept tight (≤2 active dims +
 // "+N" overflow) so a row of chips doesn't push the range presets off
-// the panel header. The full filter spec lives in the chip's title
+// the panel header. An unfiltered Real view collapses to just
+// "baseline" since that's what it functionally is; a non-default view
+// with no filter is "baseline (View)" so the operator can tell which
+// pool it represents. The full filter spec lives in the chip's title
 // attribute via pinDetailedLabel.
 function pinShortLabel(filter, view) {
   const parts = [];
-  if (view !== 'dynamic') parts.push(view);
   for (const [dim, vals] of Object.entries(filter.include || {})) {
     for (const v of vals) parts.push(`${dim}=${truncate(v, 12)}`);
   }
@@ -256,12 +266,16 @@ function pinShortLabel(filter, view) {
   for (const [dim, vals] of Object.entries(filter.contains || {})) {
     for (const v of vals) parts.push(`${dim}∋${truncate(v, 12)}`);
   }
-  if (parts.length === 0) return view + ' (no filter)';
+  const viewLabel = PIN_VIEW_LABELS[view] || view;
+  if (parts.length === 0) {
+    return view === 'dynamic' ? 'baseline' : `baseline (${viewLabel})`;
+  }
+  if (view !== 'dynamic') parts.unshift(viewLabel);
   const head = parts.slice(0, 2).join(', ');
   return parts.length > 2 ? `${head}, +${parts.length - 2}` : head;
 }
 function pinDetailedLabel(filter, view) {
-  const parts = [`view=${view}`];
+  const parts = [`view=${PIN_VIEW_LABELS[view] || view}`];
   for (const [dim, vals] of Object.entries(filter.include || {})) {
     for (const v of vals) parts.push(`${dim}=${v}`);
   }
