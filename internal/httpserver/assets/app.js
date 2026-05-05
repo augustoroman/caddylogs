@@ -540,6 +540,38 @@ function niceTicks(max, targetCount) {
   return out;
 }
 
+// bucketSizeLabel names the bucket interval for the timeline title.
+// Computed from the gap between two consecutive bucket starts so it
+// reflects whatever the backend's autoBucket actually picked, with no
+// duplication of its sizing rules. The names match the autoBucket
+// candidates (1s/5s/15s/30s/1m/5m/15m/30m/1h/2h/6h/12h/1d/7d/30d);
+// "second"/"minute"/"hour"/"day"/"week" are spelled out for the
+// common single-unit cases since "Timeline (hits per 1h)" reads
+// awkwardly compared to "per hour".
+function bucketSizeLabel(buckets) {
+  if (!buckets || buckets.length < 2) return 'bucket';
+  const ms = new Date(buckets[1].start).getTime() - new Date(buckets[0].start).getTime();
+  if (ms <= 0) return 'bucket';
+  const s = ms / 1000;
+  if (s % (7 * 24 * 3600) === 0) {
+    const w = s / (7 * 24 * 3600);
+    return w === 1 ? 'week' : `${w}w`;
+  }
+  if (s % (24 * 3600) === 0) {
+    const d = s / (24 * 3600);
+    return d === 1 ? 'day' : `${d}d`;
+  }
+  if (s % 3600 === 0) {
+    const h = s / 3600;
+    return h === 1 ? 'hour' : `${h}h`;
+  }
+  if (s % 60 === 0) {
+    const m = s / 60;
+    return m === 1 ? 'minute' : `${m}m`;
+  }
+  return s === 1 ? 'second' : `${s}s`;
+}
+
 function renderTimeline(buckets, overlays) {
   const svg = document.getElementById('timeline-chart');
   const w = svg.clientWidth || 800;
@@ -584,7 +616,10 @@ function renderTimeline(buckets, overlays) {
   const maxVal = Math.max(filteredMax, ...overlayMaxes);
   const titleEl = document.getElementById('timeline-title-text');
   if (titleEl) {
-    titleEl.textContent = useBytes ? 'Timeline (data per bucket)' : 'Timeline (hits per bucket)';
+    const unit = bucketSizeLabel(buckets);
+    titleEl.textContent = useBytes
+      ? `Timeline (data per ${unit})`
+      : `Timeline (hits per ${unit})`;
   }
   // AXIS_W reserves a left margin for Y-axis labels. Everything that
   // positions in the chart area offsets by it; the brush handler at
