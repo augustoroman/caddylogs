@@ -1185,20 +1185,63 @@ function installColumnResize(table) {
     });
   });
 }
+// Column widths are scoped by current panel-width setting because what
+// looks balanced at "narrow" overflows at "wide" and vice versa. Key is
+// cl_cols_<panelWidth>_<panelName>.
+function colsKey(panelName) {
+  return 'cl_cols_' + state.panelWidth + '_' + panelName;
+}
 function saveColumnWidths(table) {
   const panel = table.dataset.panel;
   if (!panel) return;
   const widths = [...table.querySelectorAll('thead th')].map(th => th.style.width || '');
-  try { localStorage.setItem('cl_cols_' + panel, JSON.stringify(widths)); } catch {}
+  try { localStorage.setItem(colsKey(panel), JSON.stringify(widths)); } catch {}
 }
 function restoreColumnWidths(table, panelName) {
   try {
-    const raw = localStorage.getItem('cl_cols_' + panelName);
+    const raw = localStorage.getItem(colsKey(panelName));
     if (!raw) return;
     const widths = JSON.parse(raw);
     const ths = table.querySelectorAll('thead th');
     widths.forEach((w, i) => { if (w && ths[i]) ths[i].style.width = w; });
   } catch {}
+}
+// One-time migration: legacy keys (cl_cols_<panel>) were unscoped and
+// produced overflow when switching layouts. Drop them so the new scoped
+// scheme starts from defaults.
+function purgeLegacyColumnWidths() {
+  const layouts = ['narrow_', 'medium_', 'wide_'];
+  const stale = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith('cl_cols_')) continue;
+    const rest = k.slice('cl_cols_'.length);
+    if (!layouts.some(p => rest.startsWith(p))) stale.push(k);
+  }
+  stale.forEach(k => { try { localStorage.removeItem(k); } catch {} });
+}
+// Clear inline widths on existing tables and reapply from the layout
+// scope. Called both after the user resets and after a panel-width
+// toggle so already-mounted tables pick up the right per-layout widths.
+function reapplyColumnWidthsForCurrentLayout() {
+  document.querySelectorAll('table.panel-table').forEach(table => {
+    const panel = table.dataset.panel;
+    if (!panel) return;
+    table.querySelectorAll('thead th').forEach(th => { th.style.width = ''; });
+    restoreColumnWidths(table, panel);
+  });
+}
+function resetColumnWidthsForCurrentLayout() {
+  const prefix = 'cl_cols_' + state.panelWidth + '_';
+  const toDrop = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(prefix)) toDrop.push(k);
+  }
+  toDrop.forEach(k => { try { localStorage.removeItem(k); } catch {} });
+  document.querySelectorAll('table.panel-table thead th').forEach(th => {
+    th.style.width = '';
+  });
 }
 
 function renderRows(rows, append) {
@@ -1442,6 +1485,7 @@ function setPanelWidth(w) {
   document.querySelectorAll('.pw-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.pw === w);
   });
+  reapplyColumnWidthsForCurrentLayout();
 }
 
 function setView(v) {
@@ -1966,6 +2010,10 @@ document.querySelectorAll('.time-btn').forEach(btn => {
 document.querySelectorAll('.pw-btn').forEach(btn => {
   btn.addEventListener('click', () => setPanelWidth(btn.dataset.pw));
 });
+document.querySelectorAll('.cols-reset').forEach(btn => {
+  btn.addEventListener('click', resetColumnWidthsForCurrentLayout);
+});
+purgeLegacyColumnWidths();
 // Apply the persisted panel-width on load so the grid starts at the
 // operator's preferred density rather than flashing the default first.
 setPanelWidth(state.panelWidth);

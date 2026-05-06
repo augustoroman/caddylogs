@@ -75,6 +75,11 @@ a:hover { text-decoration: underline; }
 }
 .btn:hover { background: var(--bg-hover); }
 .btn-ghost { background: transparent; }
+.cols-reset {
+  padding: 2px 6px; font-size: 13px; line-height: 1;
+  color: var(--muted); border-color: transparent;
+}
+.cols-reset:hover { color: var(--text); border-color: var(--border); }
 
 .view-switch { display: flex; gap: 4px; }
 .view-btn.active { background: var(--accent); color: #0a1016; border-color: var(--accent); font-weight: 600; }
@@ -198,12 +203,17 @@ a:hover { text-decoration: underline; }
   -webkit-user-select: none;
 }
 .panel-table tr:hover { background: var(--bg-hover); }
-.panel-table .bar-cell { min-width: 50px; }
+/* Faint separators advertise where the column resize handles live. */
+.panel-table th:not(:last-child) { border-right: 1px solid var(--border); }
 .panel-table .bar {
   background: var(--accent); height: 6px; border-radius: 3px; opacity: 0.35;
 }
 .panel-table .key-cell { }
-.panel-table .hits-cell { min-width: 60px; }
+/* Sized to fit ~7 monospace chars + padding ("51,123", "xxx MB"). */
+.panel-table th[data-col="primary"],
+.panel-table th[data-col="bar"],
+.panel-table .hits-cell,
+.panel-table .bar-cell { width: 72px; }
 .panel-empty { color: var(--muted); font-size: 11px; padding: 6px 0; }
 
 .panel-footer {
