@@ -1156,9 +1156,16 @@ async function loadMorePanel(sec) {
 }
 
 // --- column resize + width persistence ---
+// The trailing bar column compensates every drag: as the dragged column
+// grows by Δ the bar shrinks by Δ, so the table never overflows the
+// panel. Bar is purely a rescaling sparkline so it tolerates a wide
+// range of widths. Growth is capped at the point bar would shrink past
+// MIN_BAR_W; if you need more room, switch panel-width up a notch.
+const MIN_BAR_W = 20;
 function installColumnResize(table) {
-  const ths = table.querySelectorAll('thead th');
-  ths.forEach((th, i) => {
+  const ths = [...table.querySelectorAll('thead th')];
+  const barTh = ths.find(t => t.dataset.col === 'bar') || null;
+  ths.forEach((th) => {
     const handle = th.querySelector('.col-resize');
     if (!handle) return;
     handle.addEventListener('mousedown', (e) => {
@@ -1166,12 +1173,18 @@ function installColumnResize(table) {
       e.stopPropagation();
       const startX = e.clientX;
       const startW = th.getBoundingClientRect().width;
+      const compensate = barTh && barTh !== th;
+      const startBarW = compensate ? barTh.getBoundingClientRect().width : 0;
+      const maxGrow = compensate ? Math.max(0, startBarW - MIN_BAR_W) : Infinity;
       handle.classList.add('resizing');
       th.classList.add('resizing');
       const onMove = (ev) => {
         const delta = ev.clientX - startX;
-        const newW = Math.max(30, startW + delta);
+        const newW = Math.max(30, Math.min(startW + delta, startW + maxGrow));
         th.style.width = newW + 'px';
+        if (compensate) {
+          barTh.style.width = (startBarW - (newW - startW)) + 'px';
+        }
       };
       const onUp = () => {
         handle.classList.remove('resizing');
