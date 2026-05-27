@@ -18,7 +18,11 @@ type Broadcaster func(backend.EventRow)
 
 // Run starts tail goroutines for every path that isn't gzipped. It returns
 // once ctx is canceled, after all tail goroutines exit.
-func Run(ctx context.Context, paths []string, store backend.Store, cls *classify.Classifier, bc Broadcaster) {
+//
+// markDirty, when non-nil, is invoked for each new non-static row so the
+// caller can schedule a heuristic-classifier re-run. It must be safe for
+// concurrent use (one tail goroutine per path).
+func Run(ctx context.Context, paths []string, store backend.Store, cls *classify.Classifier, bc Broadcaster, markDirty func()) {
 	var wg sync.WaitGroup
 	for _, p := range paths {
 		if strings.HasSuffix(p, ".gz") {
@@ -38,6 +42,9 @@ func Run(ctx context.Context, paths []string, store backend.Store, cls *classify
 				_ = store.Ingest(ctx, []parser.Event{r.Event})
 				if classified.IsStatic {
 					continue
+				}
+				if markDirty != nil {
+					markDirty()
 				}
 				if bc != nil {
 					bc(toEventRow(classified))

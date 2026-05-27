@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"github.com/alecthomas/kingpin/v2"
 )
 
@@ -29,9 +31,10 @@ type commonFlags struct {
 // serveFlags extends commonFlags with server-specific options.
 type serveFlags struct {
 	commonFlags
-	Listen       string
-	NoTail       bool
-	OpenBrowser  bool
+	Listen             string
+	NoTail             bool
+	OpenBrowser        bool
+	ClassifierInterval time.Duration
 }
 
 // reportFlags extends commonFlags with report-specific options.
@@ -88,6 +91,8 @@ func bindServeFlags(cmd *kingpin.CmdClause) *serveFlags {
 		BoolVar(&s.NoTail)
 	cmd.Flag("open", "Open the dashboard in the default browser once it's listening.").
 		BoolVar(&s.OpenBrowser)
+	cmd.Flag("classifier-interval", "How often to re-run the heuristic classifiers while serving, picking up new tailed traffic. 0 disables periodic runs (startup + manual UI only). Runs never overlap.").
+		Default("1h").DurationVar(&s.ClassifierInterval)
 	return s
 }
 

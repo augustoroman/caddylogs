@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/augustoroman/caddylogs/internal/classifier"
@@ -67,10 +69,44 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 		return err
 	}
 	runner := classifier.NewRunner(store, cls.ManualTags)
+
+	// classifierMu serializes ALL classifier execution — the periodic
+	// batch below and the manual run/clear handlers wired later both take
+	// it, so a run can never overlap another (the Runner reconciles a
+	// shared tag set and must not have two writers at once).
+	var classifierMu sync.Mutex
+	// dirty is set by live-tail on each new non-static row; the periodic
+	// loop runs a batch only when it's set, then clears it.
+	var dirty atomic.Bool
+	runBatch := func() {
+		classifierMu.Lock()
+		defer classifierMu.Unlock()
+		if err := runBuiltInClassifiers(ctx, runner, classifiers); err != nil {
+			fmt.Fprintf(os.Stderr, "caddylogs: classifier batch error: %v\n", err)
+		}
+	}
 	if !opts.NoClassifiers {
+		// Single owner goroutine: run once at startup, then re-run at
+		// most once per interval and only when there's new traffic. The
+		// timer is reset AFTER each batch completes (not a fixed Ticker),
+		// so ticks can't pile up behind a multi-minute run.
 		go func() {
-			if err := runBuiltInClassifiers(ctx, runner, classifiers); err != nil {
-				fmt.Fprintf(os.Stderr, "caddylogs: classifier batch error: %v\n", err)
+			runBatch()
+			if opts.ClassifierInterval <= 0 {
+				return // periodic re-runs disabled
+			}
+			timer := time.NewTimer(opts.ClassifierInterval)
+			defer timer.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-timer.C:
+					if dirty.Swap(false) {
+						runBatch()
+					}
+					timer.Reset(opts.ClassifierInterval)
+				}
 			}
 		}()
 	}
@@ -127,6 +163,10 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 		if c == nil {
 			return nil, fmt.Errorf("unknown classifier %q", name)
 		}
+		// Wait for any in-flight batch so manual and periodic runs never
+		// reconcile the shared tag set concurrently.
+		classifierMu.Lock()
+		defer classifierMu.Unlock()
 		return runner.Run(ctx, c)
 	})
 	server.SetClassifierClearFn(func(ctx context.Context, name string) (any, error) {
@@ -134,12 +174,14 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 		if c == nil {
 			return nil, fmt.Errorf("unknown classifier %q", name)
 		}
+		classifierMu.Lock()
+		defer classifierMu.Unlock()
 		return runner.Clear(ctx, c)
 	})
 
 	// Live tail on a separate goroutine. Cancellation via ctx.
 	if !opts.NoTail {
-		go livetail.Run(ctx, paths, store, cls, server.Broadcast)
+		go livetail.Run(ctx, paths, store, cls, server.Broadcast, func() { dirty.Store(true) })
 	}
 
 	fmt.Fprintf(os.Stderr, "caddylogs: dashboard at http://%s\n", opts.Listen)

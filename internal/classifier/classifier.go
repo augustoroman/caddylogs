@@ -84,6 +84,7 @@ func BuiltIn() []Classifier {
 		NewHeadOnly(),       // all HEAD
 		NewHTTP10Only(),     // all HTTP/1.0
 		NewNoStaticEver(),   // generalization: any URIs, no static
+		NewScore(),          // running per-IP suspicion score; last so specific rules claim first
 	}
 }
 

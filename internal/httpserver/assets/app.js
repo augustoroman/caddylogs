@@ -966,8 +966,20 @@ const MALICIOUS_PANELS = [
   { name: 'status', title: 'Response status', dim: 'status' },
   { name: 'referer', title: 'Referrers (spoofed)', dim: 'referer' },
 ];
+// The classifier panels are client-rendered from the /api/tags data
+// (source/reason/score live in the tag set, not the request rows), so
+// they carry a `client` flag and `tagType` selecting which tags belong
+// on this view. The "classifiers" panel is a source/score-bucket
+// breakdown that scopes the "reasons" panel when a row is clicked.
+const CLASSIFIERS_PANEL_BOTS = { name: 'classifiers', title: 'Classifiers', client: true, tagType: 'bot' };
+const CLASSIFIERS_PANEL_MALICIOUS = { name: 'classifiers', title: 'Classifiers', client: true, tagType: 'malicious' };
+const REASONS_PANEL_BOTS = { name: 'reasons', title: 'Classifier flags', client: true, tagType: 'bot' };
+const REASONS_PANEL_MALICIOUS = { name: 'reasons', title: 'Classifier flags', client: true, tagType: 'malicious' };
+
 function currentPanelDefs() {
-  return state.view === 'malicious' ? MALICIOUS_PANELS : DYNAMIC_PANELS;
+  if (state.view === 'malicious') return [CLASSIFIERS_PANEL_MALICIOUS, REASONS_PANEL_MALICIOUS, ...MALICIOUS_PANELS];
+  if (state.view === 'bots') return [CLASSIFIERS_PANEL_BOTS, REASONS_PANEL_BOTS, ...DYNAMIC_PANELS];
+  return DYNAMIC_PANELS;
 }
 
 // PANEL_PAGE_SIZE governs how many rows "Show more" fetches per click.
@@ -991,6 +1003,12 @@ function renderPanels(panels) {
   container.innerHTML = '';
   const defs = currentPanelDefs();
   defs.forEach(def => {
+    if (def.client) {
+      container.appendChild(def.name === 'classifiers'
+        ? renderClassifiersPanel(def)
+        : renderReasonsPanel(def));
+      return;
+    }
     const initialRows = panels[def.name] || [];
     const sec = document.createElement('section');
     sec.className = 'panel';
@@ -1114,6 +1132,276 @@ function appendPanelRows(sec, rows) {
       });
     }
     tbody.appendChild(tr);
+  });
+}
+
+// --- Classifier-flags ("reasons") panel ---------------------------------
+// Client-rendered from latestTags because the score/reason lives in the
+// tag set, not the request rows. Lists the IPs the classifiers flagged
+// for the current pool, the numeric score parsed out of the reason, and
+// the full reason text, sorted by score descending.
+
+// flagsScope, when set, narrows the "Classifier flags" panel to one
+// classifier source or score threshold. Set by clicking a row in the
+// "Classifiers" breakdown panel; toggled off by clicking it again. Kept
+// as a module var (not URL state) — it's an ephemeral drill-down. tagType
+// records the pool it was set under so it doesn't leak across views.
+let flagsScope = null;
+
+// flagsSortDir controls the score sort on the "Classifier flags" panel.
+// Toggled by clicking the score column header. Ascending + a score
+// bucket (e.g. "score >100") surfaces the lowest-scoring flags.
+let flagsSortDir = 'desc';
+
+// Cumulative score thresholds for the "Classifiers" breakdown buckets.
+// Each row counts score-flagged IPs whose score exceeds the threshold;
+// clicking one scopes the flags panel to that "score > X" set.
+const SCORE_THRESHOLDS = [
+  { min: 1000000, label: 'score >1M' },
+  { min: 100000, label: 'score >100k' },
+  { min: 10000, label: 'score >10k' },
+  { min: 1000, label: 'score >1k' },
+  { min: 100, label: 'score >100' },
+];
+
+// parseScore pulls the leading integer out of a "score 1306: ..." reason.
+// Returns null when the reason isn't score-shaped (e.g. another rule).
+function parseScore(reason) {
+  const m = /score\s+(-?\d+)/i.exec(reason || '');
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// matchScope reports whether a flags row satisfies the active scope.
+function matchScope(r, scope) {
+  if (!scope) return true;
+  if (scope.type === 'source') return r.source === scope.value;
+  if (scope.type === 'minscore') return r.score != null && r.score > scope.min;
+  return true;
+}
+
+// reasonRowsForView selects the tags belonging to this panel's pool
+// (bot vs malicious), annotates each with a parsed score, applies the
+// active scope, and sorts highest-score first (scoreless tags sink to
+// the bottom by recency).
+function reasonRowsForView(tagType) {
+  const scope = (flagsScope && flagsScope.tagType === tagType) ? flagsScope : null;
+  const rows = latestTags
+    .filter(t => t.tag === tagType && (t.reason || t.source))
+    .map(t => ({ ip: t.ip, source: t.source || 'manual', reason: t.reason || '', score: parseScore(t.reason), at: t.at || 0 }))
+    .filter(r => matchScope(r, scope));
+  const dir = flagsSortDir === 'asc' ? 1 : -1;
+  rows.sort((a, b) => {
+    // Scoreless rows always sink to the bottom regardless of direction.
+    const an = a.score == null, bn = b.score == null;
+    if (an !== bn) return an ? 1 : -1;
+    if (an && bn) return b.at - a.at;
+    if (a.score !== b.score) return dir * (a.score - b.score);
+    return b.at - a.at;
+  });
+  return rows;
+}
+
+function renderReasonsPanel(def) {
+  const sec = document.createElement('section');
+  sec.className = 'panel';
+  sec.dataset.panel = def.name;
+  sec.innerHTML = `
+    <div class="panel-title">
+      <span><span>${escapeHTML(def.title)}</span> <span class="muted panel-count">0</span></span>
+      <input type="text" class="panel-filter" placeholder="filter ip…" autocomplete="off" spellcheck="false" title="Type an IP and hit Enter to filter">
+    </div>
+    <table class="panel-table" data-panel="${def.name}">
+      <thead><tr>
+        <th data-col="key">ip<span class="col-resize"></span></th>
+        <th data-col="score" class="right sortable" title="click to reverse sort"><span class="sort-label">score</span><span class="col-resize"></span></th>
+        <th data-col="reason">reason</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="panel-footer">
+      <span class="panel-status">showing 0</span>
+      <button class="btn panel-more" type="button">show more</button>
+    </div>
+  `;
+  const pfInput = sec.querySelector('.panel-filter');
+  pfInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const v = pfInput.value.trim();
+    if (v) addFilter('ip', v, false);
+    pfInput.value = '';
+  });
+  sec._pg = { def, limit: state.topN };
+  sec.querySelector('.panel-more').addEventListener('click', () => {
+    sec._pg.limit += PANEL_PAGE_SIZE;
+    fillReasonsPanel(sec);
+  });
+  sec.querySelector('th[data-col="score"]').addEventListener('click', (e) => {
+    if (e.target.closest('.col-resize')) return;
+    flagsSortDir = flagsSortDir === 'asc' ? 'desc' : 'asc';
+    refreshTagPanels();
+  });
+  fillReasonsPanel(sec);
+  installColumnResize(sec.querySelector('table.panel-table'));
+  restoreColumnWidths(sec.querySelector('table.panel-table'), def.name);
+  return sec;
+}
+
+function fillReasonsPanel(sec) {
+  const def = sec._pg.def;
+  const tbody = sec.querySelector('tbody');
+  const lbl = sec.querySelector('.sort-label');
+  if (lbl) lbl.textContent = 'score ' + (flagsSortDir === 'asc' ? '▲' : '▼');
+  const all = reasonRowsForView(def.tagType);
+  const shown = all.slice(0, sec._pg.limit);
+  tbody.innerHTML = '';
+  if (all.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="3" class="panel-empty">no flagged IPs</td></tr>`;
+  } else {
+    shown.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.dataset.val = r.ip;
+      tr.setAttribute('title', 'click to filter, right-click to tag');
+      const scoreTxt = r.score == null ? '—' : fmtInt(r.score);
+      tr.innerHTML = `
+        <td class="key-cell" title="${escapeHTML(r.ip)}">${escapeHTML(r.ip)}</td>
+        <td class="right score-cell" title="${escapeHTML(r.reason)}">${escapeHTML(scoreTxt)}</td>
+        <td class="reason-cell" title="${escapeHTML('source: ' + r.source)}">${escapeHTML(r.reason || r.source)}</td>`;
+      tr.addEventListener('click', (e) => {
+        if (e.target.closest('.col-resize')) return;
+        addFilter('ip', r.ip, e.shiftKey);
+      });
+      tr.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        openTagMenu(r.ip, e.clientX, e.clientY);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+  sec.querySelector('.panel-count').textContent = all.length;
+  const exhausted = shown.length >= all.length;
+  const scope = (flagsScope && flagsScope.tagType === def.tagType) ? flagsScope : null;
+  const scopeNote = scope ? ` · ${scope.label} (click again to clear)` : '';
+  sec.querySelector('.panel-status').textContent =
+    `showing ${shown.length}` + (exhausted ? ' (all)' : ` of ${all.length}`) + scopeNote;
+  const btn = sec.querySelector('.panel-more');
+  btn.disabled = exhausted;
+  btn.textContent = exhausted ? 'no more' : `show ${PANEL_PAGE_SIZE} more`;
+}
+
+// --- Classifiers breakdown panel ----------------------------------------
+// A source/score-bucket count for the current pool, built from latestTags.
+// Clicking a row scopes the "Classifier flags" panel; clicking the active
+// row clears the scope.
+
+// classifierBreakdown returns the per-source counts and cumulative
+// score-bucket counts for one pool (bot vs malicious).
+function classifierBreakdown(tagType) {
+  const tags = latestTags.filter(t => t.tag === tagType);
+  const bySource = {};
+  for (const t of tags) {
+    const s = t.source || 'manual';
+    bySource[s] = (bySource[s] || 0) + 1;
+  }
+  const sources = Object.entries(bySource)
+    .map(([source, count]) => ({ source, count }))
+    .sort((a, b) => b.count - a.count);
+  const scores = tags.map(t => parseScore(t.reason)).filter(s => s != null);
+  const buckets = SCORE_THRESHOLDS
+    .map(t => ({ min: t.min, label: t.label, count: scores.filter(s => s > t.min).length }))
+    .filter(b => b.count > 0);
+  return { sources, buckets };
+}
+
+function renderClassifiersPanel(def) {
+  const sec = document.createElement('section');
+  sec.className = 'panel';
+  sec.dataset.panel = def.name;
+  sec.innerHTML = `
+    <div class="panel-title">
+      <span><span>${escapeHTML(def.title)}</span> <span class="muted panel-count">0</span></span>
+    </div>
+    <table class="panel-table" data-panel="${def.name}">
+      <thead><tr>
+        <th data-col="key">classifier<span class="col-resize"></span></th>
+        <th data-col="primary" class="right">flagged<span class="col-resize"></span></th>
+        <th data-col="bar"></th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  `;
+  sec._pg = { def };
+  fillClassifiersPanel(sec);
+  installColumnResize(sec.querySelector('table.panel-table'));
+  restoreColumnWidths(sec.querySelector('table.panel-table'), def.name);
+  return sec;
+}
+
+function fillClassifiersPanel(sec) {
+  const def = sec._pg.def;
+  const tbody = sec.querySelector('tbody');
+  const { sources, buckets } = classifierBreakdown(def.tagType);
+  const scope = (flagsScope && flagsScope.tagType === def.tagType) ? flagsScope : null;
+  const maxCount = Math.max(1, ...sources.map(s => s.count), ...buckets.map(b => b.count));
+  tbody.innerHTML = '';
+  const total = sources.reduce((a, s) => a + s.count, 0);
+  sec.querySelector('.panel-count').textContent = total;
+  if (total === 0) {
+    tbody.innerHTML = `<tr><td colspan="3" class="panel-empty">no flagged IPs</td></tr>`;
+    return;
+  }
+
+  const addRow = (label, count, active, onClick, isHeader) => {
+    const tr = document.createElement('tr');
+    if (isHeader) {
+      tr.innerHTML = `<td colspan="3" class="classifier-subhead">${escapeHTML(label)}</td>`;
+      tbody.appendChild(tr);
+      return;
+    }
+    if (active) tr.classList.add('scope-active');
+    tr.setAttribute('title', active ? 'click to clear filter' : 'click to filter the flags panel');
+    const w = (count / maxCount) * 100;
+    tr.innerHTML = `
+      <td class="key-cell" title="${escapeHTML(label)}">${escapeHTML(label)}</td>
+      <td class="right hits-cell">${fmtInt(count)}</td>
+      <td class="bar-cell"><div class="bar" style="width:${w.toFixed(1)}%"></div></td>`;
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('.col-resize')) return;
+      onClick();
+    });
+    tbody.appendChild(tr);
+  };
+
+  sources.forEach(s => {
+    const active = !!scope && scope.type === 'source' && scope.value === s.source;
+    addRow(s.source, s.count, active,
+      () => setFlagsScope(active ? null : { type: 'source', value: s.source, label: s.source, tagType: def.tagType }));
+  });
+  if (buckets.length > 0) {
+    addRow('by score', 0, false, null, true);
+    buckets.forEach(b => {
+      const active = !!scope && scope.type === 'minscore' && scope.min === b.min;
+      addRow(b.label, b.count, active,
+        () => setFlagsScope(active ? null : { type: 'minscore', min: b.min, label: b.label, tagType: def.tagType }));
+    });
+  }
+}
+
+// setFlagsScope updates the drill-down and refreshes both client panels
+// (the breakdown for the active highlight, the flags list for the rows).
+function setFlagsScope(scope) {
+  flagsScope = scope;
+  refreshTagPanels();
+}
+
+// refreshTagPanels refills the client-rendered classifier panels after
+// the tag list updates (the tag fetch and the dashboard fanout race) or
+// after the scope changes.
+function refreshTagPanels() {
+  document.querySelectorAll('section.panel[data-panel="reasons"]').forEach(sec => {
+    if (sec._pg) fillReasonsPanel(sec);
+  });
+  document.querySelectorAll('section.panel[data-panel="classifiers"]').forEach(sec => {
+    if (sec._pg) fillClassifiersPanel(sec);
   });
 }
 
@@ -1768,6 +2056,11 @@ function initCollapsibleSection({ titleSelector, bodySelector, storageKey }) {
   });
 }
 
+// latestTags caches the most recent /api/tags payload so the
+// client-rendered "Classifier flags" panel can read reasons/scores
+// without its own fetch. Updated by refreshTagList.
+let latestTags = [];
+
 async function refreshTagList() {
   const sec = document.getElementById('tags-section');
   const body = document.getElementById('tags-body');
@@ -1776,6 +2069,10 @@ async function refreshTagList() {
   try {
     const data = await getJSON('/api/tags');
     const tags = data.tags || [];
+    latestTags = tags;
+    // The dashboard fanout and this tag fetch race; refill the
+    // client-rendered classifier panels now that the data has landed.
+    refreshTagPanels();
     if (pathEl) pathEl.textContent = data.path || '';
     if (tags.length === 0) {
       sec.classList.add('hidden');

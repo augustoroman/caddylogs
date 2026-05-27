@@ -216,6 +216,26 @@ a:hover { text-decoration: underline; }
 .panel-table .bar-cell { width: 72px; }
 .panel-empty { color: var(--muted); font-size: 11px; padding: 6px 0; }
 
+/* Classifier-flags panel: the reason column wraps so the full score
+   breakdown is readable rather than ellipsised like the count panels. */
+.panel-table th[data-col="reason"] { width: auto; }
+.panel-table td.reason-cell {
+  white-space: normal; word-break: break-word;
+  color: var(--muted); font-size: 11px;
+}
+.panel-table .score-cell { width: 64px; }
+.panel-table th[data-col="score"] { width: 64px; }
+
+/* Classifiers breakdown panel: active scope row + score-bucket subhead. */
+.panel-table th.sortable { cursor: pointer; }
+.panel-table th.sortable:hover { background: var(--bg-hover); }
+.panel-table tr.scope-active { background: var(--bg-hover); }
+.panel-table tr.scope-active .key-cell { color: var(--accent); font-weight: 600; }
+.panel-table td.classifier-subhead {
+  color: var(--muted); font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.05em; padding-top: 6px; cursor: default;
+}
+
 .panel-footer {
   display: flex; justify-content: space-between; align-items: center;
   margin-top: 4px; padding-top: 4px;
