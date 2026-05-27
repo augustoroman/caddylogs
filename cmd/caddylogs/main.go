@@ -26,6 +26,9 @@ func main() {
 	reportCmd := app.Command("report", "Render a static HTML snapshot of the current filter set.")
 	reportOpts := bindReportFlags(reportCmd)
 
+	analyzeCmd := app.Command("analyze", "Evaluate each classifier independently against the current tag set and report coverage, cost, and false positives.")
+	analyzeOpts := bindAnalyzeFlags(analyzeCmd)
+
 	clearCacheCmd := app.Command("clear-cache", "Delete cached ingest databases and exit.")
 	clearCacheOpts := bindClearCacheFlags(clearCacheCmd)
 
@@ -47,6 +50,11 @@ func main() {
 	case reportCmd.FullCommand():
 		if err := runReport(ctx, reportOpts); err != nil {
 			fmt.Fprintln(os.Stderr, "report:", err)
+			os.Exit(1)
+		}
+	case analyzeCmd.FullCommand():
+		if err := runAnalyze(ctx, analyzeOpts); err != nil {
+			fmt.Fprintln(os.Stderr, "analyze:", err)
 			os.Exit(1)
 		}
 	case clearCacheCmd.FullCommand():

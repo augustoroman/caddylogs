@@ -43,6 +43,12 @@ type reportFlags struct {
 	Out string
 }
 
+// analyzeFlags extends commonFlags with analyze-specific options.
+type analyzeFlags struct {
+	commonFlags
+	ListAll bool
+}
+
 func bindCommon(cmd *kingpin.CmdClause, c *commonFlags) {
 	cmd.Arg("paths", "Caddy log files (.log or .log.gz); supports shell globs.").
 		Required().StringsVar(&c.Paths)
@@ -102,4 +108,12 @@ func bindReportFlags(cmd *kingpin.CmdClause) *reportFlags {
 	cmd.Flag("out", "Path to write the static HTML report to.").
 		Default("report.html").StringVar(&r.Out)
 	return r
+}
+
+func bindAnalyzeFlags(cmd *kingpin.CmdClause) *analyzeFlags {
+	a := &analyzeFlags{}
+	bindCommon(cmd, &a.commonFlags)
+	cmd.Flag("list", "Print the full IP lists for misses and false positives instead of truncating.").
+		BoolVar(&a.ListAll)
+	return a
 }
