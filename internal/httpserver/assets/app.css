@@ -92,6 +92,14 @@ a:hover { text-decoration: underline; }
 .view-btn[data-view="static"].active    { background: var(--warn); border-color: var(--warn); color: #1a1000; }
 .view-btn[data-view="local"].active     { background: #7aa6e0; border-color: #7aa6e0; color: #0a1016; }
 .view-btn[data-view="bots"].active      { background: #c89a3a; border-color: #c89a3a; color: #1a1000; }
+/* "All" is a cross-class widener, not a peer class — set it off with a small
+   gap and a neutral active color so it reads as a different kind of control. */
+.view-btn-all { margin-left: 8px; }
+.view-btn[data-view="all"].active { background: var(--text); border-color: var(--text); color: var(--bg); }
+.all-needs-filter { grid-column: 1 / -1; padding: 24px; max-width: 60ch; color: var(--text); line-height: 1.5; }
+.all-needs-filter strong { font-size: 14px; }
+.all-needs-filter p { margin: 10px 0 0; }
+.all-needs-filter .muted { font-size: 12px; }
 
 .breakdown {
   padding: 6px 16px 10px; border-bottom: 1px solid var(--border);

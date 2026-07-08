@@ -147,7 +147,7 @@ function deepCopyFilter(f) {
 //   view=static&sort=bytes
 //   inc.ip=1.2.3.4&inc.ip=5.6.7.8&exc.method=GET&con.uri=admin
 //   from=2026-04-01T00:00:00Z&to=2026-04-29T00:00:00Z
-const VIEWS = ['dynamic', 'static', 'local', 'bots', 'malicious'];
+const VIEWS = ['dynamic', 'static', 'local', 'bots', 'malicious', 'all'];
 const SORTS = ['hits', 'bytes'];
 function encodeStateToHash() {
   const p = new URLSearchParams();
@@ -979,7 +979,29 @@ const REASONS_PANEL_MALICIOUS = { name: 'reasons', title: 'Classifier flags', cl
 function currentPanelDefs() {
   if (state.view === 'malicious') return [CLASSIFIERS_PANEL_MALICIOUS, REASONS_PANEL_MALICIOUS, ...MALICIOUS_PANELS];
   if (state.view === 'bots') return [CLASSIFIERS_PANEL_BOTS, REASONS_PANEL_BOTS, ...DYNAMIC_PANELS];
+  // 'all' and the real/local/static views share the generic breakdown set;
+  // the top class-composition bar supplies the cross-class split for 'all'.
   return DYNAMIC_PANELS;
+}
+
+// renderAllNeedsFilter replaces the panels with a prompt when the All view is
+// selected without a filter, and clears the stale overview/timeline/rows so no
+// leftover numbers from the previous view look like "all" results.
+function renderAllNeedsFilter() {
+  renderOverview({});
+  renderStatusClass({});
+  renderTimeline([], null);
+  renderRows([], false);
+  const container = document.getElementById('panels');
+  container.innerHTML =
+    `<div class="all-needs-filter">
+       <strong>The All view spans every class</strong> — real, static, bots, local, and malicious.
+       <p>Add at least one filter (an IP, host, URL, status, …) to use it. Click a value in any
+       panel or the raw-requests list, or use a panel's filter box. The current filters then apply
+       across every class instead of just one.</p>
+       <p class="muted">A filter is required so the view stays fast: without one it would scan
+       every request in every pool.</p>
+     </div>`;
 }
 
 // PANEL_PAGE_SIZE governs how many rows "Show more" fetches per click.
@@ -1671,8 +1693,19 @@ function viewTable(view) {
   switch (view) {
     case 'static':    return 'static';
     case 'malicious': return 'malicious';
+    case 'all':       return 'all';
     default:          return 'dynamic';
   }
+}
+
+// hasNonTimeFilter mirrors the server's filterHasPredicate: true when the
+// filter constrains by something other than a time bound. The All view needs
+// one to stay fast (it spans every class), so the UI uses this both to decide
+// whether to fire the query and to show the "add a filter" prompt instead.
+function hasNonTimeFilter(f) {
+  f = f || state.filter || {};
+  const any = o => o && Object.values(o).some(a => (a || []).length > 0);
+  return any(f.include) || any(f.exclude) || any(f.contains);
 }
 
 // --- main refresh cycle ---
@@ -1688,6 +1721,16 @@ async function refreshAll() {
   const body = { filter: effectiveFilter, topn: state.topN, table, order_by: state.sortBy };
   refreshBreakdown();
   refreshTagList();
+
+  // The All view spans every class and the server requires a non-time
+  // filter before serving it (filterHasPredicate). With none set, show a
+  // prompt rather than firing a request the server will reject. The
+  // breakdown bar above still renders the global class composition.
+  if (state.view === 'all' && !hasNonTimeFilter()) {
+    renderAllNeedsFilter();
+    inflight = null;
+    return;
+  }
 
   // Pin overlays fire in parallel so their latency overlaps the main
   // dashboard's. Each pin keeps its captured view + filter (the "what")
@@ -1790,7 +1833,7 @@ function setPanelWidth(w) {
 }
 
 function setView(v) {
-  if (!['dynamic', 'static', 'local', 'bots', 'malicious'].includes(v)) return;
+  if (!['dynamic', 'static', 'local', 'bots', 'malicious', 'all'].includes(v)) return;
   state.view = v;
   document.querySelectorAll('.view-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.view === v);
@@ -1933,9 +1976,12 @@ function matchesFilter(r, filter) {
 // view or the user has opted in) since the client doesn't know the server
 // flags; this is correct for the default server config.
 function rowMatchesCurrentView(r) {
-  if (rowTable(r) !== viewTable(state.view)) return false;
+  // The All view spans every pool, so any row's table qualifies; other views
+  // pin to their single table.
+  if (state.view !== 'all' && rowTable(r) !== viewTable(state.view)) return false;
   const f = viewFilter(state.filter, state.view);
-  if (state.view !== 'malicious') {
+  // malicious and all bypass the server-side bot/local exclusion defaults.
+  if (state.view !== 'malicious' && state.view !== 'all') {
     f.exclude = f.exclude || {};
     const incBot = (f.include && f.include.is_bot) || [];
     const excBot = f.exclude.is_bot || [];
