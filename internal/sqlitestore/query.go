@@ -296,6 +296,15 @@ func (s *Store) queryTimeline(ctx context.Context, table, where string, args []a
 	if bucketNs <= 0 {
 		return &backend.Result{Kind: backend.KindTimeline}, nil
 	}
+	// Clamp the emitted bucket count. bucketNs is client-supplied
+	// (q.Bucket) and the loop below allocates one slice entry per
+	// interval across the span, so a tiny bucket over a wide range would
+	// otherwise allocate an unbounded slice and can OOM the process.
+	// Round bucketNs up so the series stays at or under maxTimelineBuckets.
+	const maxTimelineBuckets = 5000
+	if span := spanTo.UnixNano() - spanFrom.UnixNano(); span > 0 && span/bucketNs+1 > maxTimelineBuckets {
+		bucketNs = span/maxTimelineBuckets + 1
+	}
 
 	sqlStr := fmt.Sprintf(
 		`SELECT (ts / ?) * ? AS bucket_start,
