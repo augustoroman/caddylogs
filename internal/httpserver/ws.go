@@ -75,9 +75,13 @@ func (h *hub) closeAll() {
 // broadcasted events to it. The client is expected to only read; any
 // messages it sends are discarded.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // same-origin by default; CORS is a bigger lift
-	})
+	// No AcceptOptions: the library enforces same-origin (Origin host must
+	// match the Host header) by default, which prevents cross-site
+	// WebSocket hijacking — any page the operator visits would otherwise be
+	// able to open this socket and read the live access-log feed (IPs,
+	// URIs, user-agents). Non-browser clients send no Origin header and are
+	// still allowed.
+	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
 	}
