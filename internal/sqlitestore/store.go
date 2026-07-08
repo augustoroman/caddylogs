@@ -346,7 +346,19 @@ func dimColumn(d backend.Dimension) string {
 	return ""
 }
 
-// tableName validates and returns the physical table for a backend.Table.
+// allTablesUnion is the FROM target for TableAll. Because all three pools
+// share schemaColumns, the UNION ALL is column-compatible, so every overview/
+// timeline/topn/rows query works against it unchanged (it substitutes for the
+// table name in `FROM %s%s`). SQLite's compound-subquery push-down applies the
+// outer WHERE to each arm, so an indexed predicate (ip, ts, host) still hits
+// each table's index instead of scanning. The identifier is a compile-time
+// constant — no user input — so it is injection-safe like the names above.
+const allTablesUnion = `(SELECT * FROM requests_dynamic ` +
+	`UNION ALL SELECT * FROM requests_static ` +
+	`UNION ALL SELECT * FROM requests_malicious) AS all_rows`
+
+// tableName validates and returns the physical table (or union subquery) for a
+// backend.Table.
 func tableName(t backend.Table) (string, error) {
 	switch t {
 	case backend.TableDynamic:
@@ -355,6 +367,8 @@ func tableName(t backend.Table) (string, error) {
 		return "requests_static", nil
 	case backend.TableMalicious:
 		return "requests_malicious", nil
+	case backend.TableAll:
+		return allTablesUnion, nil
 	}
 	return "", fmt.Errorf("unknown table %q", t)
 }

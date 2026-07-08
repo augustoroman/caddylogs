@@ -404,11 +404,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // applyDefaults merges server-configured baseline exclusions into the
 // client's filter without letting the client accidentally remove them.
-// The malicious table intentionally bypasses these defaults because
-// "hide bots" would hide nearly all of its rows and defeat the point of
-// the view.
+// The malicious and all tables intentionally bypass these defaults: for
+// malicious, "hide bots" would hide nearly all of its rows; for the All
+// view the whole point is to span every class, so excluding bots/local
+// would contradict it.
 func (s *Server) applyDefaults(f *backend.Filter, table backend.Table) {
-	if table == backend.TableMalicious {
+	if table == backend.TableMalicious || table == backend.TableAll {
 		return
 	}
 	if f.Exclude == nil {

@@ -106,6 +106,44 @@ func panelsFor(t backend.Table) []panelSpec {
 	}
 }
 
+// filterHasPredicate reports whether f constrains the result set by something
+// other than a time bound. The All view spans all three pools, so without a
+// real predicate it would aggregate every row across every class (the
+// full-scan-×3 case). We require an IP/host/URL/etc. filter before serving it
+// — which matches its intended use ("I already have specific filters") and
+// keeps the expensive unfiltered case out of reach. A time window alone does
+// not count: it is almost always present and can still span the whole dataset.
+func filterHasPredicate(f backend.Filter) bool {
+	for _, v := range f.Include {
+		if len(v) > 0 {
+			return true
+		}
+	}
+	for _, v := range f.Exclude {
+		if len(v) > 0 {
+			return true
+		}
+	}
+	for _, v := range f.Contains {
+		if len(v) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// guardAllTable enforces the filter requirement for TableAll. It returns true
+// (after writing a 400) when the request must be rejected; callers return
+// immediately in that case. Non-All tables always pass.
+func (s *Server) guardAllTable(w http.ResponseWriter, table backend.Table, f backend.Filter) bool {
+	if table == backend.TableAll && !filterHasPredicate(f) {
+		s.writeError(w, http.StatusBadRequest,
+			"the All view spans every class; add at least one filter (IP, host, URL, …) to use it")
+		return true
+	}
+	return false
+}
+
 // findPanelSpec resolves a panel by name within a table's list.
 func findPanelSpec(t backend.Table, name string) *panelSpec {
 	for _, p := range panelsFor(t) {
@@ -124,6 +162,9 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Table == "" {
 		req.Table = backend.TableDynamic
+	}
+	if s.guardAllTable(w, req.Table, req.Filter) {
+		return
 	}
 	s.applyDefaults(&req.Filter, req.Table)
 	if req.TopN <= 0 {
@@ -155,6 +196,9 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Table == "" {
 		req.Table = backend.TableDynamic
+	}
+	if s.guardAllTable(w, req.Table, req.Filter) {
+		return
 	}
 	s.applyDefaults(&req.Filter, req.Table)
 	out, err := s.store.Query(r.Context(), backend.Query{
@@ -221,6 +265,9 @@ func (s *Server) handlePanel(w http.ResponseWriter, r *http.Request) {
 	if req.Table == "" {
 		req.Table = backend.TableDynamic
 	}
+	if s.guardAllTable(w, req.Table, req.Filter) {
+		return
+	}
 	s.applyDefaults(&req.Filter, req.Table)
 
 	spec := findPanelSpec(req.Table, req.Panel)
@@ -274,6 +321,9 @@ func (s *Server) handleRows(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Table == "" {
 		req.Table = backend.TableDynamic
+	}
+	if s.guardAllTable(w, req.Table, req.Filter) {
+		return
 	}
 	s.applyDefaults(&req.Filter, req.Table)
 	q := backend.Query{

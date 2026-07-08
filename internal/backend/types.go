@@ -49,6 +49,11 @@ const (
 	TableDynamic   Table = "dynamic"
 	TableStatic    Table = "static"
 	TableMalicious Table = "malicious"
+	// TableAll spans every physical pool (dynamic+static+malicious) as a
+	// single UNION ALL. It exists for cross-class drill-downs ("every
+	// request from this IP, whatever its class"); callers are expected to
+	// pair it with a selective filter since it otherwise touches all rows.
+	TableAll Table = "all"
 )
 
 // QueryKind discriminates the shape of the response.

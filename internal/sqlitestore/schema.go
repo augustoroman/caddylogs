@@ -64,7 +64,11 @@ var postIngestIndexes = []string{
 	`CREATE INDEX IF NOT EXISTS idx_dyn_host     ON requests_dynamic(host)`,
 	`CREATE INDEX IF NOT EXISTS idx_stat_ts      ON requests_static(ts)`,
 	`CREATE INDEX IF NOT EXISTS idx_stat_isbot   ON requests_static(is_bot)`,
+	// host indexes on static+malicious keep an "All view + host filter"
+	// drill-down index-backed across every pool (dynamic already has one).
+	`CREATE INDEX IF NOT EXISTS idx_stat_host    ON requests_static(host)`,
 	`CREATE INDEX IF NOT EXISTS idx_mal_ts       ON requests_malicious(ts)`,
+	`CREATE INDEX IF NOT EXISTS idx_mal_host     ON requests_malicious(host)`,
 	`CREATE INDEX IF NOT EXISTS idx_mal_status   ON requests_malicious(status)`,
 	`CREATE INDEX IF NOT EXISTS idx_mal_isstatic ON requests_malicious(is_static)`,
 	`CREATE INDEX IF NOT EXISTS idx_mal_reason   ON requests_malicious(malicious_reason)`,
