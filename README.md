@@ -196,6 +196,23 @@ panel lists each pattern with a Remove button. Matching is
 case-insensitive substring — the same shape as the bot matcher, but
 inverted. Empty user-agents are never allowlisted.
 
+### Log-file statistics
+
+The **log files** button in the header (or deep link `#logs=1`) opens
+an overlay listing every ingested input file with its entry count,
+on-disk vs. uncompressed size (⇒ compression ratio for `.gz` inputs),
+bytes per entry, the timespan its entries cover, and per-day rates
+(entries and uncompressed data per day), plus a totals row — the
+numbers you need to tune log-rotation settings like `roll_size` /
+`roll_keep`.
+
+Stats are a snapshot recorded per file during ingest and stored in the
+cache DB, so they're available instantly on cache hits; the live tail
+appends events without updating them, which is fine for rotation
+tuning where the rotated historical files are the interesting ones. A
+cache DB built before this feature has no stats — `clear-cache` and
+re-ingest to record them.
+
 ### Drill-down filtering
 
 Click any row in any panel (or any status segment, country, etc.) to
@@ -313,7 +330,7 @@ into whichever DB is active, so they survive cache invalidation.
 | `internal/sqlitestore` | SQLite-backed Store. Three physical tables (`requests_dynamic`, `requests_static`, `requests_malicious`); URI match + behavioral promotion move rows into malicious. Exposes `ApplyManualTag` / `RemoveManualTag` for tag-driven row relocation, and `DB()` for classifier SQL |
 | `internal/ingest` | Drives parser → store in batches; `CacheKey` fingerprints inputs; `FinalizeAttacks` runs the promotion pass (and skips manually-tagged non-malicious IPs) |
 | `internal/livetail` | Tails live logs, classifies, writes to the store, broadcasts non-static rows to websocket clients |
-| `internal/httpserver` | REST API (`/api/dashboard`, `/api/static`, `/api/panel`, `/api/rows`, `/api/classification`, `/api/query`, `/api/tag`, `/api/tags`, `/api/classifiers`, `/api/classifiers/run`, `/ws`), embedded UI, static-HTML report renderer |
+| `internal/httpserver` | REST API (`/api/dashboard`, `/api/static`, `/api/panel`, `/api/rows`, `/api/classification`, `/api/query`, `/api/tag`, `/api/tags`, `/api/classifiers`, `/api/classifiers/run`, `/api/filestats`, `/ws`), embedded UI, static-HTML report renderer |
 | `cmd/caddylogs` | kingpin CLI: `serve`, `report`, `clear-cache` subcommands |
 
 The `Store` interface is deliberately narrow — one `Query` method with a

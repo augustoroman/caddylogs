@@ -442,6 +442,38 @@ a:hover { text-decoration: underline; }
   white-space: nowrap;
 }
 
+/* Full-screen overlay for the log-file statistics view. Sits outside the
+   dashboard's core flow: a dimmed backdrop with a scrollable box on top. */
+.overlay {
+  position: fixed; inset: 0; z-index: 1200;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 6vh 24px 24px;
+}
+.overlay-box {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+  max-width: 1400px; width: 100%; max-height: 86vh;
+  display: flex; flex-direction: column;
+}
+.overlay-title {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.overlay-subtitle { font-weight: 400; font-size: 11px; flex: 1; }
+.overlay-title button { font-size: 14px; line-height: 1; }
+.overlay-content { overflow: auto; padding: 10px 14px 14px; }
+#filestats-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+#filestats-table th, #filestats-table td {
+  padding: 3px 8px; text-align: right; border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+#filestats-table th:first-child, #filestats-table td:first-child { text-align: left; }
+#filestats-table th { color: var(--muted); font-weight: 500; }
+#filestats-table tr.totals td { border-top: 1px solid var(--border); font-weight: 600; }
+#filestats-table td.muted { color: var(--muted); }
+
 #tags-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
 #tags-table th, #tags-table td {
   padding: 3px 6px; text-align: left; border-bottom: 1px solid var(--border);

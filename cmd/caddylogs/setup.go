@@ -235,6 +235,14 @@ func initialIngest(ctx context.Context, store *sqlitestore.Store, cls *classify.
 			fmt.Fprintf(os.Stderr, "%scaddylogs: [%d/%d] %s (running total: %s events)\n",
 				prefix, index, ofN, path, commaInt(totalSoFar))
 		},
+		// Persist each file's stats snapshot (entries, sizes, timespan) as it
+		// completes so the dashboard's log-file view works even for cached
+		// DBs. Best-effort: a failure here shouldn't abort the ingest.
+		OnFileDone: func(st backend.IngestFileStat) {
+			if err := store.SaveIngestFileStat(ctx, st); err != nil {
+				fmt.Fprintf(os.Stderr, "caddylogs: save file stats for %s: %v\n", st.Path, err)
+			}
+		},
 	})
 	if err != nil {
 		return err

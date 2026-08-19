@@ -43,6 +43,17 @@ CREATE TABLE IF NOT EXISTS manual_tags (
     tag TEXT NOT NULL,
     at  INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ingest_files (
+    path        TEXT PRIMARY KEY,
+    disk_bytes  INTEGER NOT NULL,
+    raw_bytes   INTEGER NOT NULL,
+    compressed  INTEGER NOT NULL,
+    entries     INTEGER NOT NULL,
+    bad_lines   INTEGER NOT NULL,
+    first_ts    INTEGER NOT NULL,  -- unix nanoseconds; 0 when no entries
+    last_ts     INTEGER NOT NULL,  -- unix nanoseconds; 0 when no entries
+    ingested_at INTEGER NOT NULL   -- unix nanoseconds
+);
 `
 
 // preIngestIndexes are the indexes required for PromoteFlaggedIPs to run

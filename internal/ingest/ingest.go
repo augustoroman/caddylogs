@@ -6,6 +6,8 @@ import (
 	"io"
 	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/augustoroman/caddylogs/internal/backend"
 	"github.com/augustoroman/caddylogs/internal/parser"
@@ -26,6 +28,11 @@ type BulkOpts struct {
 	// index is the 1-based position; ofN is the total count. totalSoFar
 	// is the running event total from preceding files.
 	OnFile func(path string, index, ofN int, totalSoFar int64)
+	// OnFileDone, if non-nil, receives a per-file statistics snapshot after
+	// each file has been fully ingested (entry count, raw/uncompressed bytes,
+	// timespan covered). Callers typically persist these so the dashboard can
+	// show what each input file contributed.
+	OnFileDone func(stat backend.IngestFileStat)
 }
 
 // BulkFromFiles parses every file in paths (.log or .log.gz) into the store.
@@ -73,17 +80,31 @@ func BulkFromFiles(ctx context.Context, store backend.Store, paths []string, opt
 		if opts.OnFile != nil {
 			opts.OnFile(p, i+1, len(sorted), total)
 		}
-		ch, err := parser.ReadFile(ctx, p)
+		ch, bc, err := parser.ReadFileCounted(ctx, p)
 		if err != nil {
 			return total, fmt.Errorf("open %s: %w", p, err)
+		}
+		stat := backend.IngestFileStat{
+			Path:       p,
+			Compressed: strings.HasSuffix(p, ".gz"),
 		}
 		for r := range ch {
 			if r.Err != nil {
 				if r.Err == io.EOF {
 					break
 				}
-				// Skip malformed lines silently.
+				// Skip malformed lines silently (but count them).
+				stat.BadLines++
 				continue
+			}
+			stat.Entries++
+			if ts := r.Event.Timestamp; !ts.IsZero() {
+				if stat.First.IsZero() || ts.Before(stat.First) {
+					stat.First = ts
+				}
+				if ts.After(stat.Last) {
+					stat.Last = ts
+				}
 			}
 			batch = append(batch, r.Event)
 			if len(batch) >= batchSize {
@@ -95,6 +116,13 @@ func BulkFromFiles(ctx context.Context, store backend.Store, paths []string, opt
 		}
 		if err := flush(); err != nil {
 			return total, err
+		}
+		if opts.OnFileDone != nil {
+			// The channel is closed, so the byte counters are final.
+			stat.DiskBytes = bc.Raw()
+			stat.RawBytes = bc.Uncompressed()
+			stat.IngestedAt = time.Now()
+			opts.OnFileDone(stat)
 		}
 	}
 	prog("ingest", "done", total, total)

@@ -169,6 +169,9 @@ function encodeStateToHash() {
   }
   if (f.time_from) p.set('from', f.time_from);
   if (f.time_to)   p.set('to',   f.time_to);
+  // The log-file stats overlay participates in the URL so it is deep-linkable
+  // (#logs=1) and the back button closes it like leaving a page.
+  if (state.fileStatsOpen) p.set('logs', '1');
   return p.toString();
 }
 function applyHashToState() {
@@ -191,6 +194,10 @@ function applyHashToState() {
   }
   state.filter.time_from = p.get('from') || null;
   state.filter.time_to   = p.get('to')   || null;
+  const wantLogs = p.get('logs') === '1';
+  if (wantLogs !== !!state.fileStatsOpen) {
+    if (wantLogs) openFileStats(); else closeFileStats();
+  }
   // Reflect view/sort in the toolbar. (Filter chips re-render via refreshAll.)
   document.querySelectorAll('.view-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.view === state.view);
@@ -2754,6 +2761,117 @@ function openWS() {
   };
   ws.onclose = () => setTimeout(openWS, 2000);
 }
+
+// --- log-file statistics overlay ---
+// Opened from the header's "log files" button; fetches /api/filestats on each
+// open and renders the ingest-time snapshot per input file plus a totals row.
+// Deliberately an overlay rather than a dashboard panel: inspecting input
+// files (e.g. to tune log rotation) is occasional, not part of the core flow.
+
+// fmtSpan renders a duration in the largest readable unit (log files span
+// hours to months, so ms/seconds precision is noise here).
+function fmtSpan(ms) {
+  if (!ms || ms <= 0) return '—';
+  const h = ms / 3600000;
+  if (h < 1) return Math.round(ms / 60000) + ' min';
+  if (h < 48) return h.toFixed(1) + ' h';
+  return (h / 24).toFixed(1) + ' d';
+}
+
+function openFileStats() {
+  state.fileStatsOpen = true;
+  syncURLFromState();
+  document.getElementById('filestats-overlay').classList.remove('hidden');
+  document.addEventListener('keydown', escFileStatsClose);
+  const el = document.getElementById('filestats-content');
+  el.innerHTML = '<div class="hint">loading…</div>';
+  getJSON('/api/filestats')
+    .then(data => renderFileStats(data.files || []))
+    .catch(e => { el.innerHTML = `<div class="hint">failed to load: ${escapeHTML(e.message)}</div>`; });
+}
+function closeFileStats() {
+  state.fileStatsOpen = false;
+  syncURLFromState();
+  document.getElementById('filestats-overlay').classList.add('hidden');
+  document.removeEventListener('keydown', escFileStatsClose);
+}
+function escFileStatsClose(e) { if (e.key === 'Escape') closeFileStats(); }
+
+function renderFileStats(files) {
+  const el = document.getElementById('filestats-content');
+  if (files.length === 0) {
+    el.innerHTML = `<div class="hint">No ingest statistics recorded. This cached database predates
+      per-file stats — run <code>caddylogs clear-cache</code> (or serve with <code>--no-cache</code>)
+      and re-ingest to record them.</div>`;
+    return;
+  }
+  // Per-file derived values. Timestamps are meaningful only when the file
+  // had parseable entries (zero-time otherwise). Per-day rates are shown
+  // only for spans over an hour so short files don't extrapolate nonsense.
+  const row = f => {
+    const hasTs = f.entries > 0 && new Date(f.first).getTime() > 0;
+    const spanMs = hasTs ? new Date(f.last) - new Date(f.first) : 0;
+    const days = spanMs / 86400000;
+    const perDay = spanMs >= 3600000
+      ? `${fmtInt(Math.round(f.entries / days))} / ${fmtBytes(f.raw_bytes / days)}`
+      : '—';
+    const name = f.path.split('/').pop();
+    const bad = f.bad_lines ? ` <span class="muted">+${fmtInt(f.bad_lines)} bad</span>` : '';
+    return `<tr>
+      <td title="${escapeHTML(f.path)}">${escapeHTML(name)}${f.compressed ? ' <span class="muted">gz</span>' : ''}</td>
+      <td>${fmtInt(f.entries)}${bad}</td>
+      <td>${fmtBytes(f.disk_bytes)}</td>
+      <td>${fmtBytes(f.raw_bytes)}</td>
+      <td>${f.compressed && f.disk_bytes > 0 ? (f.raw_bytes / f.disk_bytes).toFixed(1) + '×' : '—'}</td>
+      <td>${f.entries > 0 ? fmtBytes(f.raw_bytes / f.entries) : '—'}</td>
+      <td class="muted">${hasTs ? fmtTs(f.first) : '—'}</td>
+      <td class="muted">${hasTs ? fmtTs(f.last) : '—'}</td>
+      <td>${fmtSpan(spanMs)}</td>
+      <td>${perDay}</td>
+    </tr>`;
+  };
+  const sum = k => files.reduce((a, f) => a + (f[k] || 0), 0);
+  const entries = sum('entries'), disk = sum('disk_bytes'), raw = sum('raw_bytes');
+  const withTs = files.filter(f => f.entries > 0 && new Date(f.first).getTime() > 0);
+  const first = withTs.length ? withTs.reduce((a, f) => Math.min(a, new Date(f.first)), Infinity) : 0;
+  const last = withTs.length ? withTs.reduce((a, f) => Math.max(a, new Date(f.last)), 0) : 0;
+  const totalSpan = last > first ? last - first : 0;
+  const totalDays = totalSpan / 86400000;
+  const totalPerDay = totalSpan >= 3600000
+    ? `${fmtInt(Math.round(entries / totalDays))} / ${fmtBytes(raw / totalDays)}`
+    : '—';
+  el.innerHTML = `
+    <table id="filestats-table">
+      <thead><tr>
+        <th>file</th><th>entries</th><th>on disk</th><th>uncompressed</th><th>ratio</th>
+        <th>bytes/entry</th><th>first entry</th><th>last entry</th><th>span</th><th>per day</th>
+      </tr></thead>
+      <tbody>
+        ${files.map(row).join('')}
+        <tr class="totals">
+          <td>${files.length} files</td>
+          <td>${fmtInt(entries)}</td>
+          <td>${fmtBytes(disk)}</td>
+          <td>${fmtBytes(raw)}</td>
+          <td>${disk > 0 ? (raw / disk).toFixed(1) + '×' : '—'}</td>
+          <td>${entries > 0 ? fmtBytes(raw / entries) : '—'}</td>
+          <td class="muted">${first ? fmtTs(first) : '—'}</td>
+          <td class="muted">${last ? fmtTs(last) : '—'}</td>
+          <td>${fmtSpan(totalSpan)}</td>
+          <td>${totalPerDay}</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="hint">Sizes and timespans are per input file as of ingest; "per day" is
+    entries / uncompressed data per day over the file's span — compare against your
+    rotation settings (e.g. roll_size / roll_keep) to see how much history they retain.</div>`;
+}
+
+document.getElementById('filestats-open').addEventListener('click', openFileStats);
+document.getElementById('filestats-close').addEventListener('click', closeFileStats);
+document.getElementById('filestats-overlay').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeFileStats(); // backdrop click closes
+});
 
 // --- wire up ---
 document.getElementById('clear-filters').addEventListener('click', () => {

@@ -41,6 +41,7 @@ type Server struct {
 	allowListFn       AllowListFunc       // optional; when set, GET /api/allowlist is available
 	allowAddFn        AllowAddFunc        // optional; when set, POST /api/allowlist is available
 	allowRemoveFn     AllowRemoveFunc     // optional; when set, DELETE /api/allowlist is available
+	fileStatsFn       FileStatsFunc       // optional; when set, GET /api/filestats is available
 }
 
 // ClassificationFunc computes the 6-cell breakdown for the header strip.
@@ -141,6 +142,16 @@ func (s *Server) SetAllowRemoveFn(fn AllowRemoveFunc) {
 	s.allowRemoveFn = fn
 }
 
+// FileStatsFunc returns the per-input-file ingest statistics as a
+// JSON-serializable value (typically {"files": [...]}). The snapshots are
+// recorded at ingest time; the live tail does not update them.
+type FileStatsFunc func(ctx context.Context) (any, error)
+
+// SetFileStatsFn registers the GET /api/filestats handler.
+func (s *Server) SetFileStatsFn(fn FileStatsFunc) {
+	s.fileStatsFn = fn
+}
+
 // New builds a Server. assets is the filesystem of UI assets; pass the
 // embedded fs.FS from the assets package.
 func New(store backend.Store, assets fs.FS, defaults DefaultFilter) *Server {
@@ -170,6 +181,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/classifiers/run", s.handleClassifierRun)
 	mux.HandleFunc("/api/classifiers/clear", s.handleClassifierClear)
 	mux.HandleFunc("/api/allowlist", s.handleAllow)
+	mux.HandleFunc("/api/filestats", s.handleFileStats)
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.Handle("/", http.FileServer(http.FS(s.assets)))
 	return mux
@@ -497,6 +509,25 @@ func (s *Server) handleAllowRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pattern": pattern})
+}
+
+// handleFileStats reports the per-input-file ingest statistics snapshot
+// (GET /api/filestats). Ingest-time data only — see FileStatsFunc.
+func (s *Server) handleFileStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	if s.fileStatsFn == nil {
+		s.writeError(w, http.StatusNotFound, "filestats endpoint not configured")
+		return
+	}
+	out, err := s.fileStatsFn(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }
 
 // handleStatus reports ingest status + server info.

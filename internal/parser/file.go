@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync/atomic"
 )
 
 // Result is one event or a non-fatal per-line error emitted by a reader.
@@ -16,23 +17,61 @@ type Result struct {
 	Err   error // parse/read error; Event is zero if Err != nil
 }
 
+// ByteCount accumulates how much data a ReadFileCounted stream has consumed.
+// Raw is bytes read off disk; Uncompressed is bytes fed to the line scanner
+// (equal to Raw for plain files, larger for .gz). Counts are updated with
+// atomics and are final once the Result channel closes.
+type ByteCount struct {
+	raw, uncompressed atomic.Int64
+}
+
+// Raw returns the on-disk bytes read so far (compressed size for .gz files).
+func (b *ByteCount) Raw() int64 { return b.raw.Load() }
+
+// Uncompressed returns the decoded bytes scanned so far.
+func (b *ByteCount) Uncompressed() int64 { return b.uncompressed.Load() }
+
+// countingReader tallies bytes flowing through an io.Reader into n.
+type countingReader struct {
+	r io.Reader
+	n *atomic.Int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
 // ReadFile streams events from a file, transparently handling .gz. It closes
 // the channel on EOF or when ctx is canceled.
 func ReadFile(ctx context.Context, path string) (<-chan Result, error) {
+	ch, _, err := ReadFileCounted(ctx, path)
+	return ch, err
+}
+
+// ReadFileCounted is ReadFile plus a ByteCount that tracks the raw (on-disk)
+// and uncompressed bytes consumed — used by ingest to record per-file size
+// statistics without a second pass over the data.
+func ReadFileCounted(ctx context.Context, path string) (<-chan Result, *ByteCount, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var r io.Reader = f
+	bc := &ByteCount{}
+	var r io.Reader = &countingReader{r: f, n: &bc.raw}
 	var gz *gzip.Reader
 	if strings.HasSuffix(path, ".gz") {
-		gz, err = gzip.NewReader(f)
+		gz, err = gzip.NewReader(r)
 		if err != nil {
 			f.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		r = gz
 	}
+	// The scanner-facing layer counts decoded bytes. For plain files the same
+	// bytes pass through both counters, so Raw == Uncompressed by construction.
+	r = &countingReader{r: r, n: &bc.uncompressed}
 	out := make(chan Result, 256)
 	go func() {
 		defer close(out)
@@ -75,5 +114,5 @@ func ReadFile(ctx context.Context, path string) (<-chan Result, error) {
 			}
 		}
 	}()
-	return out, nil
+	return out, bc, nil
 }

@@ -205,6 +205,17 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 	server.SetAllowRemoveFn(func(ctx context.Context, pattern string) error {
 		return cls.Allow.Remove(pattern)
 	})
+	// Per-input-file ingest statistics (entries, sizes, compression ratio,
+	// timespan) for the dashboard's log-files view. Snapshots are recorded at
+	// ingest time and read back from the DB, so they're available on cache
+	// hits too; DBs ingested before stats existed just return an empty list.
+	server.SetFileStatsFn(func(ctx context.Context) (any, error) {
+		files, err := store.IngestFileStats(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"files": files}, nil
+	})
 
 	// Live tail on a separate goroutine. Cancellation via ctx.
 	if !opts.NoTail {

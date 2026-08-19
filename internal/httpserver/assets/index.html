@@ -35,6 +35,8 @@
     <button class="btn pw-btn" data-pw="wide">wide</button>
     <button class="btn btn-ghost cols-reset" type="button" title="Reset column widths for the current panel layout">↺</button>
   </div>
+  <button id="filestats-open" class="btn btn-ghost" type="button"
+          title="Statistics on the ingested log files — entries, sizes, compression ratio, timespan. Useful for tuning log rotation.">log files</button>
   <div id="ingest-indicator" class="ingest hidden">re-ingesting…</div>
 </header>
 
@@ -158,6 +160,20 @@
 </section>
 
 <div id="live-flash" class="live-flash hidden">live</div>
+
+<!-- Log-file statistics overlay: opened from the header's "log files" button.
+     Deliberately outside the dashboard's core flow — a full-screen overlay
+     fetched on open, showing the ingest-time snapshot per input file. -->
+<div id="filestats-overlay" class="overlay hidden">
+  <div class="overlay-box">
+    <div class="overlay-title">
+      <span>Ingested log files</span>
+      <span class="muted overlay-subtitle">snapshot taken at ingest — the live tail does not update these</span>
+      <button id="filestats-close" class="btn btn-ghost" type="button" title="Close (Esc)">×</button>
+    </div>
+    <div id="filestats-content" class="overlay-content"></div>
+  </div>
+</div>
 
 <script src="/app.js"></script>
 </body>
