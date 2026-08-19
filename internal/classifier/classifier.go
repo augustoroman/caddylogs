@@ -83,8 +83,9 @@ func BuiltIn() []Classifier {
 		NewCadencePolling(), // regular inter-request timing
 		NewHeadOnly(),       // all HEAD
 		NewHTTP10Only(),     // all HTTP/1.0
-		NewNoStaticEver(),   // generalization: any URIs, no static
-		NewScore(),          // running per-IP suspicion score; last so specific rules claim first
+		NewNoStaticEver(),      // generalization: any URIs, no static
+		NewScore(),             // running per-IP suspicion score
+		NewNoBrowserSession(),  // catch-all inversion: no human browser session => bot
 	}
 }
 
