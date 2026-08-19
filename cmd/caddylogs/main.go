@@ -32,6 +32,9 @@ func main() {
 	clearCacheCmd := app.Command("clear-cache", "Delete cached ingest databases and exit.")
 	clearCacheOpts := bindClearCacheFlags(clearCacheCmd)
 
+	resetTagsCmd := app.Command("reset-tags", "Clear entries from the persistent tags file so the classifier can re-derive them (default: all operator-applied tags; dry run unless --yes).")
+	resetTagsOpts := bindResetTagsFlags(resetTagsCmd)
+
 	chosen, err := app.Parse(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -60,6 +63,11 @@ func main() {
 	case clearCacheCmd.FullCommand():
 		if err := runClearCache(ctx, clearCacheOpts); err != nil {
 			fmt.Fprintln(os.Stderr, "clear-cache:", err)
+			os.Exit(1)
+		}
+	case resetTagsCmd.FullCommand():
+		if err := runResetTags(ctx, resetTagsOpts); err != nil {
+			fmt.Fprintln(os.Stderr, "reset-tags:", err)
 			os.Exit(1)
 		}
 	}

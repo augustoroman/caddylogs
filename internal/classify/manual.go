@@ -223,6 +223,29 @@ func (s *ManualTagSet) Delete(ip string) error {
 	return s.saveLocked()
 }
 
+// DeleteWhere removes every entry for which pred reports true, saving the
+// result once (rather than per-delete). It returns the number removed. Used
+// by the reset-tags command to bulk-clear manual tags so the classifier can
+// re-derive them from scratch.
+func (s *ManualTagSet) DeleteWhere(pred func(ManualTagListEntry) bool) (int, error) {
+	if s == nil {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for ip, e := range s.m {
+		if pred(ManualTagListEntry{IP: ip, Tag: e.Tag, At: e.At, Source: e.Source, Reason: e.Reason}) {
+			delete(s.m, ip)
+			n++
+		}
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	return n, s.saveLocked()
+}
+
 // Get returns the tag for ip, or ("", false) if it is not tagged.
 func (s *ManualTagSet) Get(ip string) (ManualTag, bool) {
 	if s == nil {
