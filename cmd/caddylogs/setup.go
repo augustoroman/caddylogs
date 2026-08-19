@@ -81,7 +81,47 @@ func buildClassifier(c commonFlags) (*classify.Classifier, error) {
 		// Replace rather than append so users can opt out of the embedded list.
 		cls.Bots = classify.NewBotDetector(extra, true)
 	}
+	// Load the persistent UA allowlist so Classify honors trusted-client
+	// patterns during ingest and the live tail. Empty file ⇒ empty set.
+	allowPath, err := resolveAllowlistFile(c.AllowlistFile)
+	if err != nil {
+		cls.Close()
+		return nil, err
+	}
+	allow, err := classify.LoadUAAllowSet(allowPath)
+	if err != nil {
+		cls.Close()
+		return nil, fmt.Errorf("load allowlist: %w", err)
+	}
+	cls.Allow = allow
 	return cls, nil
+}
+
+// resolveAllowlistFile mirrors resolveTagsFile: an empty override yields
+// ~/.config/caddylogs/allowlist.json. Lives in the config dir (not the cache
+// dir) because it is user-curated data that must survive cache invalidation.
+func resolveAllowlistFile(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "caddylogs", "allowlist.json"), nil
+}
+
+// replayUAAllowlist retroactively applies every persisted allowlist pattern to
+// the store, so a DB that was cached before a pattern was added (e.g. the file
+// was hand-edited while the server was down) still reflects it. Cheap when the
+// allowlist is empty (the common case) or already in sync; a no-op then.
+func replayUAAllowlist(ctx context.Context, store *sqlitestore.Store, cls *classify.Classifier) error {
+	for _, p := range cls.Allow.List() {
+		if _, err := store.ApplyUAAllow(ctx, p.Pattern); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // attackThresholds extracts the behavioral detection thresholds from the

@@ -37,6 +37,7 @@ type Classifier struct {
 	Attacks    *AttackMatcher // may be nil when attack detection is disabled
 	Geo        *Geo
 	ManualTags *ManualTagSet // may be nil; user-set per-IP overrides
+	Allow      *UAAllowSet   // may be nil; user-set UA allowlist (trusted clients)
 }
 
 // Options configures New().
@@ -85,6 +86,7 @@ func New(opts Options) (*Classifier, error) {
 		Attacks:    attacks,
 		Geo:        geo,
 		ManualTags: NewManualTagSet(),
+		Allow:      NewUAAllowSet(),
 	}, nil
 }
 
@@ -105,6 +107,12 @@ func (c *Classifier) Close() error {
 // every heuristic (bot UA, private-range, attack-URI, IP-flag) and uses the
 // tag's canonical settings instead. This keeps user overrides stable
 // across re-classification in the live tail.
+//
+// The UA allowlist sits just below manual tags: a request whose User-Agent
+// matches an allowlisted pattern is forced to real (is_bot=0) and skips
+// attack detection, but an explicit per-IP manual tag still overrides it
+// (tagging a specific IP is more intentional than a broad UA rule). Locality
+// is left as detected — a UA says nothing about where the client is.
 func (c *Classifier) Classify(ev parser.Event) Classified {
 	ua := ParseUA(ev.UserAgent)
 	country, city := c.Geo.Lookup(ev.RemoteIP)
@@ -114,6 +122,7 @@ func (c *Classifier) Classify(ev parser.Event) Classified {
 	reason := ""
 
 	manualTag, hasManual := c.ManualTags.Get(ev.RemoteIP)
+	allowlisted := false
 	if hasManual {
 		switch manualTag {
 		case ManualTagReal:
@@ -125,8 +134,11 @@ func (c *Classifier) Classify(ev parser.Event) Classified {
 		case ManualTagMalicious:
 			isMal, reason = true, "manual:tagged"
 		}
+	} else if _, ok := c.Allow.Match(ev.UserAgent); ok {
+		isBot = false
+		allowlisted = true
 	}
-	if !hasManual && c.Attacks != nil && !isLocal {
+	if !hasManual && !allowlisted && c.Attacks != nil && !isLocal {
 		if r, ok := c.Attacks.IPReason(ev.RemoteIP); ok {
 			isMal = true
 			reason = "ip_flag:" + r

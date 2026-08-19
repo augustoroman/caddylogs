@@ -44,7 +44,7 @@ func runReport(ctx context.Context, opts *reportFlags) error {
 		if err != nil {
 			return err
 		}
-		runner := classifier.NewRunner(store, cls.ManualTags)
+		runner := classifier.NewRunner(store, cls.ManualTags, cls.Allow)
 		if err := runBuiltInClassifiers(ctx, runner, classifiers); err != nil {
 			return err
 		}

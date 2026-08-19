@@ -130,6 +130,22 @@
   </div>
 </section>
 
+<section id="allow-section" class="panel hidden">
+  <div class="panel-title collapsible-title" role="button" tabindex="0" title="click to expand/collapse">
+    <span>Allowlisted user-agents <span class="muted" id="allow-count">0</span></span>
+    <span class="collapse-arrow" aria-hidden="true">▸</span>
+  </div>
+  <div id="allow-collapsible" class="hidden">
+    <table id="allow-table">
+      <thead><tr>
+        <th>UA substring</th><th>Note</th><th>Since</th><th></th>
+      </tr></thead>
+      <tbody id="allow-body"></tbody>
+    </table>
+    <div class="hint">Right-click a <strong>user-agent</strong> in the recent-requests list to allowlist it. A request whose UA contains one of these substrings is forced to <span class="tag-badge tag-real">real</span> (never bot, never malicious) — use it for your own firmware updaters, download agents, and monitoring boxes. Patterns are stored at <code id="allow-file-path" class="muted"></code> and survive cache rebuilds. An explicit per-IP tag still overrides the allowlist. Removing a pattern leaves already-reclassified rows where they are.</div>
+  </div>
+</section>
+
 <section id="rows-section" class="panel">
   <div class="panel-title">Recent requests <span id="rows-count" class="muted"></span></div>
   <table id="rows-table">

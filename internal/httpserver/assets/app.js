@@ -1587,7 +1587,7 @@ function appendRow(r) {
     <td title="${escapeHTML(r.uri || '')}">${escapeHTML(truncate(r.uri || '', 60))}</td>
     <td class="ip-cell" title="right-click to tag">${escapeHTML(r.ip || '')}</td>
     <td>${escapeHTML(r.country || '')}</td>
-    <td title="${escapeHTML(r.user_agent || '')}">${escapeHTML(truncate(ua, 30))}</td>
+    <td class="ua-cell" title="${escapeHTML(r.user_agent || '')}">${escapeHTML(truncate(ua, 30))}</td>
     <td class="right">${dur}</td>
   `;
   tr.addEventListener('click', (e) => {
@@ -1600,12 +1600,23 @@ function appendRow(r) {
       addFilter(map[cellIdx][0], String(map[cellIdx][1]), e.shiftKey);
     }
   });
-  tr.addEventListener('contextmenu', (e) => {
-    if (!e.target.closest('.ip-cell') || !r.ip) return;
+  tr.addEventListener('contextmenu', (e) => rowContextMenu(e, r));
+  body.appendChild(tr);
+}
+
+// rowContextMenu routes a right-click on a recent-requests row: the UA cell
+// opens the allowlist menu (keyed on the raw User-Agent), the IP cell opens
+// the tag menu. Shared by the initial render and the live-tail rows.
+function rowContextMenu(e, r) {
+  if (e.target.closest('.ua-cell') && r.user_agent) {
+    e.preventDefault();
+    openAllowMenu(r.user_agent, e.clientX, e.clientY);
+    return;
+  }
+  if (e.target.closest('.ip-cell') && r.ip) {
     e.preventDefault();
     openTagMenu(r.ip, e.clientX, e.clientY);
-  });
-  body.appendChild(tr);
+  }
 }
 
 // --- classification breakdown ---
@@ -1721,6 +1732,7 @@ async function refreshAll() {
   const body = { filter: effectiveFilter, topn: state.topN, table, order_by: state.sortBy };
   refreshBreakdown();
   refreshTagList();
+  refreshAllowlist();
 
   // The All view spans every class and the server requires a non-time
   // filter before serving it (filterHasPredicate). With none set, show a
@@ -2068,6 +2080,130 @@ async function applyTag(ip, tag) {
   }
 }
 
+// --- UA allowlist ---
+// Right-clicking a user-agent in the recent-requests list opens this menu.
+// The operator trims the full UA down to a distinctive substring (e.g.
+// "ScoreBox/") and confirms; the server persists it, teaches the classifier,
+// and reclassifies matching rows to real. Beats the bot heuristic + attack
+// detection, but a per-IP tag still wins.
+function openAllowMenu(ua, x, y) {
+  closeAllowMenu();
+  const menu = document.createElement('div');
+  menu.className = 'tag-menu allow-menu';
+  menu.id = 'allow-menu';
+  menu.innerHTML = `
+    <div class="tag-menu-title">Allowlist user-agent as <span class="tag-badge tag-real">real</span></div>
+    <div class="allow-ua" title="${escapeHTML(ua)}">${escapeHTML(ua)}</div>
+    <label class="allow-label">Match any UA containing:</label>
+    <input class="allow-pattern" type="text" spellcheck="false" />
+    <input class="allow-note" type="text" spellcheck="false" placeholder="note (optional, e.g. scoring boxes)" />
+    <div class="allow-actions">
+      <button class="allow-confirm" type="button">Allowlist</button>
+      <button class="cancel" type="button">Cancel</button>
+    </div>
+  `;
+  const W = 340, H = 240;
+  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - W)) + 'px';
+  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - H)) + 'px';
+  document.body.appendChild(menu);
+  const patternEl = menu.querySelector('.allow-pattern');
+  const noteEl = menu.querySelector('.allow-note');
+  patternEl.value = ua;
+  const submit = async () => {
+    const pattern = patternEl.value.trim();
+    if (!pattern) { patternEl.focus(); return; }
+    closeAllowMenu();
+    await addAllow(pattern, noteEl.value.trim());
+  };
+  menu.querySelector('.allow-confirm').addEventListener('click', submit);
+  patternEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+  noteEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+  menu.querySelector('.cancel').addEventListener('click', closeAllowMenu);
+  // Focus the pattern input and select it so the operator can immediately
+  // trim the full UA down to a distinctive token.
+  setTimeout(() => {
+    patternEl.focus();
+    patternEl.select();
+    document.addEventListener('click', outsideAllowClose, true);
+    document.addEventListener('keydown', escAllowClose);
+  }, 0);
+}
+function outsideAllowClose(e) {
+  const m = document.getElementById('allow-menu');
+  if (m && !m.contains(e.target)) closeAllowMenu();
+}
+function escAllowClose(e) {
+  if (e.key === 'Escape') closeAllowMenu();
+}
+function closeAllowMenu() {
+  const m = document.getElementById('allow-menu');
+  if (m) m.remove();
+  document.removeEventListener('click', outsideAllowClose, true);
+  document.removeEventListener('keydown', escAllowClose);
+}
+async function addAllow(pattern, note) {
+  try {
+    const r = await fetch('/api/allowlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pattern, note }),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.error || ('HTTP ' + r.status));
+    }
+    refreshAll();
+  } catch (e) {
+    alert('Failed to allowlist "' + pattern + '": ' + e.message);
+  }
+}
+async function removeAllow(pattern) {
+  try {
+    const r = await fetch('/api/allowlist?pattern=' + encodeURIComponent(pattern), { method: 'DELETE' });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.error || ('HTTP ' + r.status));
+    }
+    refreshAll();
+  } catch (e) {
+    alert('Failed to remove "' + pattern + '": ' + e.message);
+  }
+}
+// refreshAllowlist repaints the allowlist management panel from /api/allowlist.
+async function refreshAllowlist() {
+  const sec = document.getElementById('allow-section');
+  const body = document.getElementById('allow-body');
+  const count = document.getElementById('allow-count');
+  const pathEl = document.getElementById('allow-file-path');
+  try {
+    const data = await getJSON('/api/allowlist');
+    const patterns = data.patterns || [];
+    if (pathEl) pathEl.textContent = data.path || '';
+    count.textContent = String(patterns.length);
+    if (patterns.length === 0) {
+      sec.classList.add('hidden');
+      body.innerHTML = '';
+      return;
+    }
+    sec.classList.remove('hidden');
+    body.innerHTML = '';
+    for (const p of patterns) {
+      const tr = document.createElement('tr');
+      const since = p.at ? fmtTs(new Date(Math.round(p.at / 1e6))) : '';
+      tr.innerHTML = `
+        <td><code>${escapeHTML(p.pattern)}</code></td>
+        <td class="muted">${escapeHTML(p.note || '')}</td>
+        <td class="muted">${escapeHTML(since)}</td>
+        <td class="right"><button class="btn btn-ghost allow-remove" type="button">remove</button></td>
+      `;
+      tr.querySelector('.allow-remove').addEventListener('click', () => removeAllow(p.pattern));
+      body.appendChild(tr);
+    }
+  } catch (e) {
+    console.error('allowlist:', e);
+  }
+}
+
 // --- tag inspection + removal ---
 // Fetches the persistent tag set and renders a dismissable list so the
 // operator can audit or revoke overrides at a glance. Removing a tag
@@ -2305,14 +2441,10 @@ function openWS() {
           <td title="${escapeHTML(r.uri || '')}">${escapeHTML(truncate(r.uri || '', 60))}</td>
           <td class="ip-cell" title="right-click to tag">${escapeHTML(r.ip || '')}</td>
           <td>${escapeHTML(r.country || '')}</td>
-          <td title="${escapeHTML(r.user_agent || '')}">${escapeHTML(truncate(ua, 30))}</td>
+          <td class="ua-cell" title="${escapeHTML(r.user_agent || '')}">${escapeHTML(truncate(ua, 30))}</td>
           <td class="right">${dur}</td>
         `;
-        tr.addEventListener('contextmenu', (e) => {
-          if (!e.target.closest('.ip-cell') || !r.ip) return;
-          e.preventDefault();
-          openTagMenu(r.ip, e.clientX, e.clientY);
-        });
+        tr.addEventListener('contextmenu', (e) => rowContextMenu(e, r));
         body.insertBefore(tr, body.firstChild);
         while (body.children.length > 300) body.removeChild(body.lastChild);
       }
@@ -2399,6 +2531,11 @@ initCollapsibleSection({
   titleSelector: '#tags-section .collapsible-title',
   bodySelector: '#tags-collapsible',
   storageKey: 'cl_tags_expanded',
+});
+initCollapsibleSection({
+  titleSelector: '#allow-section .collapsible-title',
+  bodySelector: '#allow-collapsible',
+  storageKey: 'cl_allow_expanded',
 });
 loadClassifiers();
 

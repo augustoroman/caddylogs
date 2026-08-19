@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +38,9 @@ type Server struct {
 	classifierListFn  ClassifierListFunc  // optional; when set, GET /api/classifiers is available
 	classifierRunFn   ClassifierRunFunc   // optional; when set, POST /api/classifiers/run is available
 	classifierClearFn ClassifierClearFunc // optional; when set, POST /api/classifiers/clear is available
+	allowListFn       AllowListFunc       // optional; when set, GET /api/allowlist is available
+	allowAddFn        AllowAddFunc        // optional; when set, POST /api/allowlist is available
+	allowRemoveFn     AllowRemoveFunc     // optional; when set, DELETE /api/allowlist is available
 }
 
 // ClassificationFunc computes the 6-cell breakdown for the header strip.
@@ -109,6 +113,34 @@ func (s *Server) SetClassifierClearFn(fn ClassifierClearFunc) {
 	s.classifierClearFn = fn
 }
 
+// AllowListFunc returns the current UA allowlist as a JSON-serializable value
+// (typically {"patterns": [...], "path": "..."}).
+type AllowListFunc func(ctx context.Context) (any, error)
+
+// AllowAddFunc records a UA substring pattern as trusted. Implementations
+// persist the pattern, teach the classifier so future live-tail events for a
+// matching UA are treated as real, and retroactively reclassify existing rows.
+type AllowAddFunc func(ctx context.Context, pattern, note string) error
+
+// AllowRemoveFunc drops a UA pattern from the allowlist. Like tag removal, it
+// does not revert already-reclassified rows.
+type AllowRemoveFunc func(ctx context.Context, pattern string) error
+
+// SetAllowListFn registers the GET /api/allowlist handler.
+func (s *Server) SetAllowListFn(fn AllowListFunc) {
+	s.allowListFn = fn
+}
+
+// SetAllowAddFn registers the POST /api/allowlist handler.
+func (s *Server) SetAllowAddFn(fn AllowAddFunc) {
+	s.allowAddFn = fn
+}
+
+// SetAllowRemoveFn registers the DELETE /api/allowlist handler.
+func (s *Server) SetAllowRemoveFn(fn AllowRemoveFunc) {
+	s.allowRemoveFn = fn
+}
+
 // New builds a Server. assets is the filesystem of UI assets; pass the
 // embedded fs.FS from the assets package.
 func New(store backend.Store, assets fs.FS, defaults DefaultFilter) *Server {
@@ -137,6 +169,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/classifiers", s.handleClassifierList)
 	mux.HandleFunc("/api/classifiers/run", s.handleClassifierRun)
 	mux.HandleFunc("/api/classifiers/clear", s.handleClassifierClear)
+	mux.HandleFunc("/api/allowlist", s.handleAllow)
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.Handle("/", http.FileServer(http.FS(s.assets)))
 	return mux
@@ -388,6 +421,82 @@ func (s *Server) handleClassifierClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, out)
+}
+
+// handleAllow manages the UA allowlist.
+//
+//	GET    /api/allowlist                          → { patterns, path }
+//	POST   /api/allowlist  {"pattern":"ScoreBox/","note":"scoring boxes"}
+//	DELETE /api/allowlist?pattern=ScoreBox/
+//
+// POST persists the pattern, teaches the classifier, and retroactively
+// reclassifies matching rows; DELETE clears the pattern going forward but
+// leaves already-reclassified rows where they are (the UI surfaces this).
+func (s *Server) handleAllow(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleAllowList(w, r)
+	case http.MethodPost:
+		s.handleAllowAdd(w, r)
+	case http.MethodDelete:
+		s.handleAllowRemove(w, r)
+	default:
+		s.writeError(w, http.StatusMethodNotAllowed, "GET, POST or DELETE only")
+	}
+}
+
+func (s *Server) handleAllowList(w http.ResponseWriter, r *http.Request) {
+	if s.allowListFn == nil {
+		s.writeError(w, http.StatusNotFound, "allowlist endpoint not configured")
+		return
+	}
+	out, err := s.allowListFn(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleAllowAdd(w http.ResponseWriter, r *http.Request) {
+	if s.allowAddFn == nil {
+		s.writeError(w, http.StatusNotFound, "allowlist endpoint not configured")
+		return
+	}
+	var req struct {
+		Pattern string `json:"pattern"`
+		Note    string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Pattern) == "" {
+		s.writeError(w, http.StatusBadRequest, "pattern is required")
+		return
+	}
+	if err := s.allowAddFn(r.Context(), req.Pattern, req.Note); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pattern": req.Pattern})
+}
+
+func (s *Server) handleAllowRemove(w http.ResponseWriter, r *http.Request) {
+	if s.allowRemoveFn == nil {
+		s.writeError(w, http.StatusNotFound, "allowlist endpoint not configured")
+		return
+	}
+	pattern := r.URL.Query().Get("pattern")
+	if pattern == "" {
+		s.writeError(w, http.StatusBadRequest, "pattern is required")
+		return
+	}
+	if err := s.allowRemoveFn(r.Context(), pattern); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pattern": pattern})
 }
 
 // handleStatus reports ingest status + server info.

@@ -26,13 +26,17 @@ type RunResult struct {
 type Runner struct {
 	store *sqlitestore.Store
 	tags  *classify.ManualTagSet
+	allow *classify.UAAllowSet // may be nil; UA allowlist (trusted clients)
 }
 
 // NewRunner binds a runner to the store and tag set the dashboard uses.
 // The runner writes to both: Store.ApplyManualTag to move rows, and
-// ManualTagSet.SetFrom/Delete to persist the tag record.
-func NewRunner(store *sqlitestore.Store, tags *classify.ManualTagSet) *Runner {
-	return &Runner{store: store, tags: tags}
+// ManualTagSet.SetFrom/Delete to persist the tag record. allow is the UA
+// allowlist (may be nil): IPs whose traffic matches an allowlisted UA are
+// dropped from every classifier's candidate set so behavioral heuristics
+// can't re-flag trusted first-party clients as bots.
+func NewRunner(store *sqlitestore.Store, tags *classify.ManualTagSet, allow *classify.UAAllowSet) *Runner {
+	return &Runner{store: store, tags: tags, allow: allow}
 }
 
 // Run executes one classifier and applies the delta relative to the tag
@@ -96,6 +100,29 @@ func (r *Runner) Run(ctx context.Context, c Classifier) (*RunResult, error) {
 	}
 
 	result := &RunResult{Name: c.Name()}
+
+	// Drop allowlisted IPs from the candidate set before reconciling. An IP
+	// whose traffic matches an allowlisted UA is trusted first-party traffic
+	// (firmware boxes, download agents), which behaviorally looks exactly
+	// like a bot — so we remove it here rather than let a heuristic re-flag
+	// it. Removing it (vs. just skipping) also means the revert branch below
+	// undoes a stale tag if an already-tagged IP later becomes allowlisted.
+	if r.allow != nil && r.allow.Count() > 0 && len(newByIP) > 0 {
+		patterns := make([]string, 0, r.allow.Count())
+		for _, e := range r.allow.List() {
+			patterns = append(patterns, e.Pattern)
+		}
+		allowed, err := r.store.AllowlistedIPs(ctx, patterns)
+		if err != nil {
+			return nil, fmt.Errorf("allowlisted IPs: %w", err)
+		}
+		for ip := range newByIP {
+			if allowed[ip] {
+				delete(newByIP, ip)
+				result.Skipped = append(result.Skipped, ip)
+			}
+		}
+	}
 
 	for ip, d := range newByIP {
 		if manualByIP[ip] || ownedByOther[ip] {

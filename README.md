@@ -170,6 +170,32 @@ name), and timestamp; each row has an Untag button. Manual tags
 always win over classifier rules, so an IP explicitly tagged `real`
 stays `real` across every subsequent classifier run.
 
+### Trusted user-agent allowlist
+
+Manual tags key on an IP, which doesn't fit clients that phone home
+from many changing addresses — your own firmware updaters, download
+agents, and monitoring boxes. Those typically use a `curl` / `wget` /
+`Go-http-client`-style user-agent that (correctly) trips the bot
+heuristic, so they land in the Bot pool.
+
+Right-click a **user-agent** in the recent-requests list to open the
+allowlist menu. Trim the full UA down to a distinctive substring (e.g.
+`ScoreBox/`) and confirm; a request whose UA contains any allowlisted
+substring is forced to **Real** — never bot, never malicious. The
+server persists the pattern, reclassifies matching rows already in the
+DB, and honors it for every future live-tail event. The behavioral
+classifiers also skip allowlisted traffic, so a firmware box that
+*behaves* like a bot won't get re-flagged.
+
+Precedence: an explicit per-IP tag still overrides the allowlist (tagging
+one address is more intentional than a broad UA rule). Patterns are
+stored in a JSON file outside the cache dir (default
+`$XDG_CONFIG_HOME/caddylogs/allowlist.json`, override with
+`--allowlist-file`), and the collapsible **Allowlisted user-agents**
+panel lists each pattern with a Remove button. Matching is
+case-insensitive substring — the same shape as the bot matcher, but
+inverted. Empty user-agents are never allowlisted.
+
 ### Drill-down filtering
 
 Click any row in any panel (or any status segment, country, etc.) to
@@ -256,6 +282,7 @@ into whichever DB is active, so they survive cache invalidation.
 | `--cache-dir` | `$XDG_CACHE_HOME/caddylogs` | Where to keep ingested DBs |
 | `--no-cache` | | Ingest into a tempfile, never reuse |
 | `--tags-file` | `$XDG_CONFIG_HOME/caddylogs/tags.json` | Persistent manual-tag store (lives outside the cache) |
+| `--allowlist-file` | `$XDG_CONFIG_HOME/caddylogs/allowlist.json` | Trusted user-agent substrings; matching UAs are forced to `real` (lives outside the cache) |
 | `--open` | off | Launch the dashboard in the default browser |
 | `--no-tail` | off | Exit after initial ingest; no live tailing |
 | `--include-bots` | off | Stop auto-excluding bot traffic in the Real view |

@@ -236,7 +236,7 @@ func TestRunner_SkipsIPsOwnedByOtherClassifier(t *testing.T) {
 	store, _ := sqlitestore.Open(sqlitestore.Options{Classifier: cls})
 	defer store.Close()
 
-	runner := classifier.NewRunner(store, cls.ManualTags)
+	runner := classifier.NewRunner(store, cls.ManualTags, cls.Allow)
 	// Classifier A tags 1.1.1.1.
 	a := &ownershipFake{name: "A", candidates: []classifier.Decision{
 		{IP: "1.1.1.1", Tag: classify.ManualTagBot, Reason: "a"},

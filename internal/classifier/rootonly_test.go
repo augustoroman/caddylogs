@@ -199,7 +199,7 @@ func TestRunner_DiffAppliesAddsAndRemoves(t *testing.T) {
 	// Empty set; pass a fake classifier so we can control the candidate
 	// list without setting up data for the real SQL.
 	tags := cls.ManualTags
-	runner := classifier.NewRunner(store, tags)
+	runner := classifier.NewRunner(store, tags, cls.Allow)
 
 	fake := &fakeClassifier{name: "fake", candidates: []classifier.Decision{
 		{IP: "1.1.1.1", Tag: classify.ManualTagBot, Reason: "first run"},

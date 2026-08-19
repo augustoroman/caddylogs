@@ -26,6 +26,7 @@ type commonFlags struct {
 	AttackMinURIHits  int
 	NoClassifiers     bool
 	ProbeURIsFile     string
+	AllowlistFile     string
 }
 
 // serveFlags extends commonFlags with server-specific options.
@@ -86,6 +87,8 @@ func bindCommon(cmd *kingpin.CmdClause, c *commonFlags) {
 		BoolVar(&c.NoClassifiers)
 	cmd.Flag("probe-uris-file", "Replace the embedded probe-URI list used by the probe-only-uri classifier with this JSON file. Empty means look in the OS config dir; missing at the default path silently falls back to built-ins.").
 		StringVar(&c.ProbeURIsFile)
+	cmd.Flag("allowlist-file", "Path to the JSON file holding trusted User-Agent substring patterns (matching UAs are forced to 'real'). Lives outside the cache dir so it survives re-ingest. Empty means the OS config dir.").
+		StringVar(&c.AllowlistFile)
 }
 
 func bindServeFlags(cmd *kingpin.CmdClause) *serveFlags {

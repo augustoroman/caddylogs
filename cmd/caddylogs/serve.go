@@ -51,6 +51,13 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 		return err
 	}
 
+	// Same idea for the UA allowlist: a cached DB built before a pattern was
+	// added needs the matching rows reclassified. No-op when the allowlist
+	// is empty or already applied.
+	if err := replayUAAllowlist(ctx, store, cls); err != nil {
+		return err
+	}
+
 	// Run heuristic classifiers over the stored data. The runner handles
 	// the diff vs. the previous tag set for each classifier and respects
 	// operator overrides (see Runner.Run). Default-on; skip with
@@ -68,7 +75,7 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 	if err != nil {
 		return err
 	}
-	runner := classifier.NewRunner(store, cls.ManualTags)
+	runner := classifier.NewRunner(store, cls.ManualTags, cls.Allow)
 
 	// classifierMu serializes ALL classifier execution — the periodic
 	// batch below and the manual run/clear handlers wired later both take
@@ -177,6 +184,26 @@ func runServe(ctx context.Context, opts *serveFlags) error {
 		classifierMu.Lock()
 		defer classifierMu.Unlock()
 		return runner.Clear(ctx, c)
+	})
+	// Wire the UA allowlist: adding a pattern teaches the classifier (so
+	// live-tail events for a matching UA are classified real going forward)
+	// and retroactively reclassifies already-ingested rows. Removal drops
+	// the pattern but, like tag removal, leaves reclassified rows in place.
+	server.SetAllowListFn(func(ctx context.Context) (any, error) {
+		return map[string]any{
+			"patterns": cls.Allow.List(),
+			"path":     cls.Allow.Path(),
+		}, nil
+	})
+	server.SetAllowAddFn(func(ctx context.Context, pattern, note string) error {
+		if err := cls.Allow.Add(pattern, note); err != nil {
+			return err
+		}
+		_, err := store.ApplyUAAllow(ctx, pattern)
+		return err
+	})
+	server.SetAllowRemoveFn(func(ctx context.Context, pattern string) error {
+		return cls.Allow.Remove(pattern)
 	})
 
 	// Live tail on a separate goroutine. Cancellation via ctx.
