@@ -305,6 +305,9 @@ a:hover { text-decoration: underline; }
 .tl-area { fill: var(--accent); opacity: 0.18; pointer-events: none; }
 .tl-line { fill: none; stroke: var(--accent); stroke-width: 1.5; opacity: 0.85; pointer-events: none; }
 .tl-dot  { fill: var(--accent); opacity: 0.9; pointer-events: none; }
+/* While a range change is morphing the curve geometry, the native dot markers
+   no longer sit on the (resampled, blended) line, so hide them until it settles. */
+.tl-data.tl-morphing .tl-dot { display: none; }
 /* Pin overlay paths take their fill/stroke from inline style (one
    color per pin); the class only sets opacity + pointer-events. */
 .tl-area-overlay { opacity: 0.13; pointer-events: none; }

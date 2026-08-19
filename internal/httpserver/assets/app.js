@@ -20,6 +20,10 @@ const state = {
   // "last 7 days" means 7 days before the freshest row, not 7 days
   // before wall-clock (which would be empty for historical logs).
   globalLast: null,
+  // Oldest timestamp seen with no time filter active — the dataset's left
+  // edge. Used to aim the timeline's expand/squish animation when the
+  // range is cleared to "all" (there is no explicit time_from to target).
+  globalFirst: null,
   // Pinned filter snapshots overlaid on the timeline for comparison.
   // Each pin captures view + filter (drilldown) but NOT time range,
   // so pins follow the current time window — pins are about *what*,
@@ -394,9 +398,7 @@ function renderChips() {
                     <span class="val">${escapeHTML(from)} → ${escapeHTML(to)}</span>
                     <span class="x" title="Remove filter">×</span>`;
     el.querySelector('.x').addEventListener('click', () => {
-      state.filter.time_from = null;
-      state.filter.time_to = null;
-      refreshAll();
+      setTimeWindow(null, null);
     });
     c.appendChild(el);
   }
@@ -453,6 +455,9 @@ function renderOverview(ov) {
   // days" relative to the freshest data rather than wall-clock.
   if (ov.last && !state.filter.time_from && !state.filter.time_to) {
     state.globalLast = ov.last;
+  }
+  if (ov.first && !state.filter.time_from && !state.filter.time_to) {
+    state.globalFirst = ov.first;
   }
   el.innerHTML = `
     <div class="stat"><div class="label">Hits</div><div class="value">${fmtInt(ov.hits)}</div></div>
@@ -572,15 +577,273 @@ function bucketSizeLabel(buckets) {
   return s === 1 ? 'second' : `${s}s`;
 }
 
+// --- timeline range-change animation ---------------------------------------
+// A range change reads as one continuous zoom rather than a hard cut, INCLUDING
+// across the moment the new (differently-bucketed) data replaces the old. A pure
+// viewport transform can't do that: the two series are different discrete curves,
+// so swapping one SVG path for another is a visible jerk no matter how smooth the
+// coordinate frame is. Instead we morph the curve *geometry* every frame:
+//
+//   - the viewport (an animated time window) drives the x mapping;
+//   - both the old and new series are resampled — via a monotone-cubic sampler,
+//     matching the static render's smoothing — onto a shared dense grid across
+//     the current viewport, in a bucket-size-independent unit (per-ms intensity);
+//   - the two resampled curves are blended, and normalised by an animated
+//     reference intensity, so height transitions smoothly too.
+//
+// Before the response lands only the old series exists (blend = 0), so the curve
+// is exactly the old data zooming. When the new series is drawn we start the
+// blend from 0: at that instant the curve is still the old data at the on-screen
+// scale (no jump), and over the settle it morphs into the new data. Rapid changes
+// snapshot whatever is on screen so the next morph starts from the live curve.
+const TL_AXIS_W = 44;       // must match renderTimeline's left Y-axis gutter
+const TL_CHART_H = 156;     // bar drawing area height (baseline at y = TL_CHART_H)
+const TL_RESCALE_MS = 900;  // horizontal window morph duration
+const TL_SETTLE_MS = 700;   // data blend + vertical settle duration
+// The currently drawn series as an animatable model (see tlModelFrom): its
+// window, per-ms max intensity, a monotone-cubic sampler, and the native path
+// strings to restore when the animation ends.
+let tlMeta = null;
+// Truthy while a range-change render is pending; set by setTimeWindow, consumed
+// by renderTimeline to hand the fresh render off to completeTimelineSwap.
+let tlTransition = false;
+// The live animation, or null when settled. Holds the old + (once known) new
+// models, the interpolating viewport window, and the blend clock.
+let tlAnim = null;
+let tlRAF = 0;              // requestAnimationFrame handle (0 = idle)
+
+function tlEase(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+
+// tlMakeSampler builds a Fritsch–Carlson monotone-cubic interpolant over the
+// (t, v) points and returns { at(t) } evaluating it — matching the smoothing the
+// static render uses, so resampling a series reproduces its curve. Beyond the
+// outermost points it holds the endpoint value flat (the plotted points are
+// bucket centres, so this fills the half-bucket to the window edge the way the
+// static line reads); emptiness outside the data window is handled by
+// tlSampleModel gating on the window, not here.
+function tlMakeSampler(pts) {
+  const n = pts.length;
+  const xs = pts.map(p => p.t), ys = pts.map(p => p.v);
+  const m = new Array(n).fill(0);
+  if (n >= 2) {
+    const d = [];
+    for (let i = 0; i < n - 1; i++) d.push((ys[i + 1] - ys[i]) / ((xs[i + 1] - xs[i]) || 1));
+    m[0] = d[0]; m[n - 1] = d[n - 2];
+    for (let i = 1; i < n - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2;
+    for (let i = 0; i < n - 1; i++) {
+      if (d[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+      const a = m[i] / d[i], b = m[i + 1] / d[i], s = a * a + b * b;
+      if (s > 9) { const tt = 3 / Math.sqrt(s); m[i] = tt * a * d[i]; m[i + 1] = tt * b * d[i]; }
+    }
+  }
+  return {
+    at(t) {
+      if (n === 0) return 0;
+      if (t <= xs[0]) return ys[0];
+      if (t >= xs[n - 1]) return ys[n - 1];
+      let lo = 0, hi = n - 1;
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (xs[mid] <= t) lo = mid; else hi = mid; }
+      const h = (xs[hi] - xs[lo]) || 1, u = (t - xs[lo]) / h;
+      const u2 = u * u, u3 = u2 * u;
+      return (2 * u3 - 3 * u2 + 1) * ys[lo] + (u3 - 2 * u2 + u) * h * m[lo]
+           + (-2 * u3 + 3 * u2) * ys[hi] + (u3 - u2) * h * m[hi];
+    },
+  };
+}
+
+// tlSampleModel reads a model's intensity at time t, returning 0 outside its data
+// window so an expanding viewport shows empty regions there (rather than the
+// sampler's flat-held endpoint value).
+function tlSampleModel(mdl, t) {
+  return (!mdl || t < mdl.fromMs || t > mdl.toMs) ? 0 : mdl.sampler.at(t);
+}
+
+// tlModelFrom captures a drawn series as an animatable model. Values are stored
+// as per-ms intensity (value / bucketMs) so old and new series — bucketed at
+// different sizes — are directly comparable when blended. maxIntensity is the
+// reference the curve normalises against (maxVal / bucketMs).
+function tlModelFrom(fromMs, toMs, maxVal, bucketMs, centerPts, lineD, areaD) {
+  return {
+    fromMs, toMs, bucketMs,
+    maxIntensity: bucketMs > 0 ? maxVal / bucketMs : 0,
+    sampler: tlMakeSampler(centerPts.map(p => ({ t: p.t, v: bucketMs > 0 ? p.v / bucketMs : 0 }))),
+    lineD, areaD,
+  };
+}
+
+// tlIntensityAt blends the old and new series' intensity at time t by the current
+// blend amount (new absent → just old).
+function tlIntensityAt(a, t) {
+  const oi = tlSampleModel(a.old, t);
+  const ni = a.new ? tlSampleModel(a.new, t) : oi;
+  return oi + (ni - oi) * a.blendE;
+}
+
+// tlDrawCurve rebuilds the line + area paths for the current viewport and blend:
+// it resamples the blended intensity across the viewport, normalises by the
+// blended reference intensity, and writes fresh path data. Native dots are hidden
+// (.tl-morphing) while this runs since they belong to the un-morphed series.
+function tlDrawCurve() {
+  const a = tlAnim;
+  if (!a) return;
+  const svg = document.getElementById('timeline-chart');
+  const dataG = svg && svg.querySelector('.tl-data');
+  const line = dataG && dataG.querySelector('.tl-line');
+  const area = dataG && dataG.querySelector('.tl-area');
+  if (!line || !area) return;
+  dataG.classList.add('tl-morphing');
+  const chartW = Math.max(1, (svg.clientWidth || 800) - TL_AXIS_W);
+  const chartH = TL_CHART_H, top = chartH - 4;
+  const M = Math.max(60, Math.min(220, Math.round(chartW / 6)));
+  const refI = a.old.maxIntensity + ((a.new ? a.new.maxIntensity : a.old.maxIntensity) - a.old.maxIntensity) * a.blendE;
+  const vf = a.viewFrom, span = (a.viewTo - a.viewFrom) || 1;
+  let lineD = '', areaD = '';
+  for (let j = 0; j < M; j++) {
+    const f = j / (M - 1);
+    const x = TL_AXIS_W + f * chartW;
+    let frac = refI > 0 ? tlIntensityAt(a, vf + f * span) / refI : 0;
+    frac = frac < 0 ? 0 : frac > 1.02 ? 1.02 : frac;
+    const xs = x.toFixed(2), ys = (chartH - frac * top).toFixed(2);
+    if (j === 0) { lineD = `M ${xs} ${ys}`; areaD = `M ${xs} ${chartH} L ${xs} ${ys}`; }
+    else { lineD += ` L ${xs} ${ys}`; areaD += ` L ${xs} ${ys}`; }
+  }
+  areaD += ` L ${(TL_AXIS_W + chartW).toFixed(2)} ${chartH} Z`;
+  line.setAttribute('d', lineD);
+  area.setAttribute('d', areaD);
+}
+
+// tlSnapshotModel freezes the currently displayed (possibly mid-morph) curve as a
+// model, so a new range change begun before the last one settled morphs from
+// what's actually on screen rather than snapping back to a prior series.
+function tlSnapshotModel(a) {
+  const M = 200, vf = a.viewFrom, span = (a.viewTo - a.viewFrom) || 1;
+  const refI = a.old.maxIntensity + ((a.new ? a.new.maxIntensity : a.old.maxIntensity) - a.old.maxIntensity) * a.blendE;
+  const pts = [];
+  for (let j = 0; j < M; j++) { const t = vf + (j / (M - 1)) * span; pts.push({ t, v: tlIntensityAt(a, t) }); }
+  return { fromMs: a.viewFrom, toMs: a.viewTo, bucketMs: 1, maxIntensity: refI,
+           sampler: tlMakeSampler(pts), lineD: '', areaD: '' };
+}
+
+// tlFrame advances the viewport window and the blend clock, redraws the morphing
+// curve, and finishes once both are done (restoring the crisp native new paths).
+function tlFrame(now) {
+  const a = tlAnim;
+  if (!a) { tlRAF = 0; return; }
+  const hp = a.hDur > 0 ? Math.min(1, (now - a.hT0) / a.hDur) : 1;
+  const he = tlEase(hp);
+  a.viewFrom = a.hFrom0 + (a.hFromT - a.hFrom0) * he;
+  a.viewTo = a.hTo0 + (a.hToT - a.hTo0) * he;
+  const bp = a.new ? (a.bDur > 0 ? Math.min(1, (now - a.bT0) / a.bDur) : 1) : 0;
+  a.blendE = tlEase(bp);
+  tlDrawCurve();
+  if (hp >= 1 && a.new && bp >= 1) finishTlAnim();
+  else if (hp >= 1 && !a.new) tlRAF = 0;     // fully zoomed, paused until data lands
+  else tlRAF = requestAnimationFrame(tlFrame);
+}
+
+// finishTlAnim restores the new series' crisp native paths (the morph draws a
+// resampled approximation) and re-shows its dots.
+function finishTlAnim() {
+  const a = tlAnim;
+  const svg = document.getElementById('timeline-chart');
+  const dataG = svg && svg.querySelector('.tl-data');
+  if (dataG && a && a.new) {
+    const line = dataG.querySelector('.tl-line'), area = dataG.querySelector('.tl-area');
+    if (line) line.setAttribute('d', a.new.lineD);
+    if (area) area.setAttribute('d', a.new.areaD);
+    dataG.classList.remove('tl-morphing');
+  }
+  tlAnim = null;
+  tlRAF = 0;
+}
+
+// cancelTlAnim drops any in-flight morph without touching the DOM — used when a
+// plain (non-range) render is about to wipe and redraw the chart authoritatively.
+function cancelTlAnim() {
+  if (tlRAF) { cancelAnimationFrame(tlRAF); tlRAF = 0; }
+  tlAnim = null;
+}
+
+// setTimeWindow changes the timeline's [from,to] (RFC3339 strings or null; null
+// from = dataset start, null to = now) and starts the zoom, then refreshes.
+function setTimeWindow(fromISO, toISO) {
+  const newFromMs = fromISO ? Date.parse(fromISO)
+    : (state.globalFirst ? Date.parse(state.globalFirst)
+       : (tlMeta ? tlMeta.fromMs : Date.now() - 7 * 86400000));
+  const newToMs = toISO ? Date.parse(toISO) : Date.now();
+  tlTransition = true;
+  beginTimelineTransition(newFromMs, newToMs);
+  state.filter.time_from = fromISO;
+  state.filter.time_to = toISO;
+  refreshAll();
+}
+
+// beginTimelineTransition starts (or, mid-morph, retargets) the viewport zoom
+// toward the new window, keeping the old series as the blend source. If a morph
+// is already running the on-screen curve is snapshotted first, so the new zoom
+// continues seamlessly from it.
+function beginTimelineTransition(newFromMs, newToMs) {
+  if (!tlMeta || newToMs - newFromMs <= 0) return;
+  const now = performance.now();
+  if (tlAnim) {
+    tlAnim.old = tlSnapshotModel(tlAnim);
+    tlAnim.new = null;
+    tlAnim.hFrom0 = tlAnim.viewFrom; tlAnim.hTo0 = tlAnim.viewTo;
+    tlAnim.hFromT = newFromMs; tlAnim.hToT = newToMs;
+    tlAnim.hT0 = now; tlAnim.hDur = TL_RESCALE_MS;
+    tlAnim.bT0 = now; tlAnim.bDur = 0; tlAnim.blendE = 0;
+  } else {
+    tlAnim = {
+      old: tlMeta, new: null,
+      hFrom0: tlMeta.fromMs, hTo0: tlMeta.toMs, hFromT: newFromMs, hToT: newToMs,
+      hT0: now, hDur: TL_RESCALE_MS,
+      bT0: now, bDur: 0, blendE: 0,
+      viewFrom: tlMeta.fromMs, viewTo: tlMeta.toMs,
+    };
+  }
+  if (!tlRAF) tlRAF = requestAnimationFrame(tlFrame);
+  tlDrawCurve();
+}
+
+// completeTimelineSwap runs once the new series is drawn (as tlMeta): it adds it
+// as the blend target and starts the blend from 0 — so the curve stays exactly
+// as it is this frame (still the old data at the on-screen scale) and morphs into
+// the new data — while the viewport finishes converging on the real data window.
+function completeTimelineSwap() {
+  if (!tlAnim) return; // first-ever data: nothing to morph from, static stands
+  const now = performance.now();
+  const nat = tlMeta;
+  const remaining = Math.max(TL_SETTLE_MS, tlAnim.hDur - (now - tlAnim.hT0));
+  tlAnim.hFrom0 = tlAnim.viewFrom; tlAnim.hTo0 = tlAnim.viewTo;
+  tlAnim.hFromT = nat.fromMs; tlAnim.hToT = nat.toMs;
+  tlAnim.hT0 = now; tlAnim.hDur = remaining;
+  tlAnim.new = nat;
+  tlAnim.bT0 = now; tlAnim.bDur = TL_SETTLE_MS; tlAnim.blendE = 0;
+  if (!tlRAF) tlRAF = requestAnimationFrame(tlFrame);
+  tlDrawCurve();
+}
+
 function renderTimeline(buckets, overlays) {
   const svg = document.getElementById('timeline-chart');
+  // A range change routes through setTimeWindow, which sets tlTransition and
+  // starts the viewport zoom; this render then hands off to completeTimelineSwap
+  // below to keep it continuous. Any other render (sort/view toggle, pin
+  // overlay fold-in, empty result) is authoritative and static, so it cancels
+  // whatever zoom may be running and draws at rest.
+  const transition = tlTransition;
+  tlTransition = null;
+  if (!transition) cancelTlAnim();
   const w = svg.clientWidth || 800;
   const h = 180;           // total svg height
-  const chartH = 156;      // bar drawing area (top)
+  const chartH = TL_CHART_H; // bar drawing area (top); baseline at y = chartH
   const axisH = 24;        // axis strip (bottom 24px for ticks + labels)
   svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
   svg.innerHTML = '';
-  if (!buckets || buckets.length === 0) return;
+  if (!buckets || buckets.length === 0) {
+    tlMeta = null;
+    cancelTlAnim(); // nothing to animate onto
+    return;
+  }
   // Bar height tracks whichever metric the global hits/data toggle is
   // sorting on, so the timeline visualization stays in sync with the
   // panels' primary column. Tooltip carries both regardless.
@@ -627,12 +890,32 @@ function renderTimeline(buckets, overlays) {
   // offset so a click in the label gutter clamps to bucket 0 instead
   // of selecting nothing. 44px fits worst-case SI labels like "999 KB"
   // and "1.5 MB" with a couple px of breathing room.
-  const AXIS_W = 44;
+  const AXIS_W = TL_AXIS_W;
   const chartW = Math.max(1, w - AXIS_W);
   const barW = chartW / buckets.length;
   const ns = 'http://www.w3.org/2000/svg';
   const xc = i => AXIS_W + i * barW + barW / 2;
   const yFor = b => chartH - (maxVal > 0 ? (valueOf(b) / maxVal) * (chartH - 4) : 0);
+
+  // The data-bearing shapes (overlays + area/line/dots) live inside a
+  // <g class="tl-data"> nested in a clip-wrapper. Transition transforms are
+  // applied to tl-data; the wrapper carries the clip so an expanding curve is
+  // cropped to the chart (never spilling over the Y-axis gutter or the edges)
+  // while its own transform is free to move it. Everything else (gridlines,
+  // boundaries, axis, ticks, hit-rects) is drawn straight onto the svg and
+  // snaps to the new geometry.
+  const clip = document.createElementNS(ns, 'clipPath');
+  clip.setAttribute('id', 'tl-clip');
+  const clipRect = document.createElementNS(ns, 'rect');
+  clipRect.setAttribute('x', AXIS_W); clipRect.setAttribute('y', 0);
+  clipRect.setAttribute('width', chartW.toFixed(2)); clipRect.setAttribute('height', chartH);
+  clip.appendChild(clipRect);
+  const clipWrap = document.createElementNS(ns, 'g');
+  clipWrap.setAttribute('class', 'tl-clipwrap');
+  clipWrap.setAttribute('clip-path', 'url(#tl-clip)');
+  const dataG = document.createElementNS(ns, 'g');
+  dataG.setAttribute('class', 'tl-data');
+  clipWrap.appendChild(dataG);
 
   // Y-axis: nice round-number gridlines + labels. Drawn first so data
   // overlays them. The 0 line is omitted here because the X-axis
@@ -660,6 +943,11 @@ function renderTimeline(buckets, overlays) {
     }
   }
 
+  // Insert the clip + data layer above the gridlines but below the boundary
+  // dividers / axis / hit-rects that follow, preserving the original z-order.
+  svg.appendChild(clip);
+  svg.appendChild(clipWrap);
+
   // Visualization is a smoothed filled area + line + dot markers
   // tracing the chosen metric. Smoothing uses Fritsch-Carlson monotone
   // cubic interpolation so spikes don't overshoot the baseline, and
@@ -683,13 +971,13 @@ function renderTimeline(buckets, overlays) {
     oArea.setAttribute('class', 'tl-area-overlay');
     oArea.setAttribute('style', `fill: ${om.color}`);
     oArea.setAttribute('d', oAreaD);
-    svg.appendChild(oArea);
+    dataG.appendChild(oArea);
     const oLineD = `M ${opts[0].x.toFixed(2)} ${opts[0].y.toFixed(2)}` + ocurves;
     const oLine = document.createElementNS(ns, 'path');
     oLine.setAttribute('class', 'tl-line-overlay');
     oLine.setAttribute('style', `stroke: ${om.color}`);
     oLine.setAttribute('d', oLineD);
-    svg.appendChild(oLine);
+    dataG.appendChild(oLine);
   }
 
   const pts = buckets.map((b, i) => ({ x: xc(i), y: yFor(b) }));
@@ -706,14 +994,14 @@ function renderTimeline(buckets, overlays) {
   const area = document.createElementNS(ns, 'path');
   area.setAttribute('class', 'tl-area');
   area.setAttribute('d', areaD);
-  svg.appendChild(area);
+  dataG.appendChild(area);
 
   // Line path: just the smoothed trace, no fill.
   const lineD = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}` + curves;
   const line = document.createElementNS(ns, 'path');
   line.setAttribute('class', 'tl-line');
   line.setAttribute('d', lineD);
-  svg.appendChild(line);
+  dataG.appendChild(line);
 
   // Dot markers — only when buckets are spaced widely enough that the
   // dots read as distinct points (with r=2, anything below ~5px barW
@@ -729,7 +1017,7 @@ function renderTimeline(buckets, overlays) {
       c.setAttribute('cx', pts[i].x.toFixed(2));
       c.setAttribute('cy', pts[i].y.toFixed(2));
       c.setAttribute('r', 2);
-      svg.appendChild(c);
+      dataG.appendChild(c);
     });
   }
 
@@ -903,13 +1191,27 @@ function renderTimeline(buckets, overlays) {
       const bucketEnd = hi >= buckets.length - 1
         ? null
         : (buckets[hi + 1]?.start || null);
-      state.filter.time_from = bucketStart;
-      state.filter.time_to = bucketEnd;
-      refreshAll();
+      setTimeWindow(bucketStart, bucketEnd);
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   };
+
+  // Capture this render as an animatable model so a range change can morph
+  // from/into it. Points are the bucket centres (matching where the curve is
+  // plotted); the right window edge is one bucket past the last start (buckets
+  // are dense and edge-to-edge across [from, to)).
+  const bucketMs = buckets.length > 1
+    ? (new Date(buckets[1].start) - new Date(buckets[0].start))
+    : Math.max(1, spanMs);
+  const firstMs = new Date(buckets[0].start).getTime();
+  const centerPts = buckets.map((b, i) => ({ t: firstMs + i * bucketMs + bucketMs / 2, v: valueOf(b) }));
+  tlMeta = tlModelFrom(firstMs, firstMs + buckets.length * bucketMs, maxVal, bucketMs, centerPts, lineD, areaD);
+
+  // Range-change render: the new series is in the DOM at its native scale. Hand
+  // off to the morph, which starts blending it in from the on-screen curve so
+  // there is no jerk when the old data is replaced by the new.
+  if (transition) completeTimelineSwap();
 }
 
 // HTTP status reason phrases for the status-code panel tooltip. Covers
@@ -2455,8 +2757,12 @@ function openWS() {
 
 // --- wire up ---
 document.getElementById('clear-filters').addEventListener('click', () => {
-  state.filter = { include: {}, exclude: {}, contains: {}, time_from: null, time_to: null };
-  refreshAll();
+  // Clear the non-time filters in place, then let setTimeWindow drop the time
+  // bounds so the timeline animates the range back to "all" like the presets.
+  state.filter.include = {};
+  state.filter.exclude = {};
+  state.filter.contains = {};
+  setTimeWindow(null, null);
 });
 
 // Timeline range presets. "N days back from the freshest known
@@ -2465,15 +2771,12 @@ document.getElementById('clear-filters').addEventListener('click', () => {
 // so live-tail ingestion keeps appending inside the range.
 function applyRangePreset(days) {
   if (!days || days <= 0) {
-    state.filter.time_from = null;
-    state.filter.time_to = null;
+    setTimeWindow(null, null);
   } else {
     const refEnd = state.globalLast ? new Date(state.globalLast) : new Date();
     const start = new Date(refEnd.getTime() - days * 86400000);
-    state.filter.time_from = start.toISOString();
-    state.filter.time_to = null;
+    setTimeWindow(start.toISOString(), null);
   }
-  refreshAll();
 }
 document.querySelectorAll('.range-btn').forEach(btn => {
   btn.addEventListener('click', () => {
