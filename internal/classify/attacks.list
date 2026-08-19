@@ -1,104 +1,62 @@
-# Default attack-URI patterns for caddylogs.
+# caddylogs attack-URI rules — organized by vulnerability class.
 #
-# One pattern per line. Blank lines and lines starting with `#` are ignored.
-# A line beginning with `re:` is treated as a regex. Optional `reason=` prefix
-# picks a human-readable label shown in the dashboard.
+# One rule per line. Blank lines and lines starting with `#` are ignored.
+# A line beginning with `re:` is a case-insensitive RE2 regex (the engine is
+# linear-time, so the broad alternations below are safe); a plain line is a
+# case-insensitive substring. Both match against the request URI (path+query).
+# Regexes are matched against the original-case URI, so each carries an inline
+# `(?i)`. The `reason=` prefix names the bucket shown in the dashboard.
 #
-# Patterns are matched case-insensitively as substrings against the request
-# URI (path + querystring).
+# NOTE: this deployment serves NO server-side scripts (it's a Go app), so any
+# request for a .php/.asp/.jsp/.cgi resource, a dotfile, or a config/secret file
+# is a probe by definition. The buckets below lean on that: they are tuned to be
+# aggressive on this site's surface while not matching any of its real paths
+# (pages, /img assets, /dl/*.uf2 firmware, /SB/* builds, /api/*).
 
-# --- WordPress scan targets ---
-wordpress=wp-login.php
-wordpress=wp-admin/
-wordpress=wp-content/
-wordpress=wp-includes/
-wordpress=xmlrpc.php
-wordpress=wp-config
-wordpress=wlwmanifest.xml
+# ── WordPress — the single most-scanned surface ──────────────────────────────
+re: wordpress=(?i)(wp-login|wp-admin|wp-content|wp-includes|wp-config|xmlrpc\.php|wlwmanifest|/wp-json/|/wordpress/|/wp/)
 
-# --- Environment & config file fishing ---
-env-file=/.env
-git-dir=/.git/
-aws-creds=/.aws/
-ssh-dir=/.ssh/
-docker-cfg=/.docker/
-config-file=/config.json
-config-file=/config.php
-config-file=/config.yml
-config-file=/settings.php
+# ── PHP scripts / webshells / backdoor checks (no legit PHP here) ─────────────
+re: php-probe=(?i)\.(php|phtml|php[0-9]?)($|[?/])
 
-# --- Admin panels ---
-phpmyadmin=/phpmyadmin
-phpmyadmin=/pma/
-phpmyadmin=/myadmin
-phpmyadmin=/dbadmin
-adminer=/adminer
-adminer=adminer.php
-cpanel=/cpanel
-plesk=/plesk
+# ── Other server-side scripts (ASP / JSP / CGI / Struts .action) ─────────────
+re: script-probe=(?i)\.(asp|aspx|jsp|jspx|cgi|action)($|[?/])
 
-# --- Server info leaks ---
-server-info=server-status
-server-info=server-info
-server-info=/info.php
-server-info=/phpinfo
-actuator=/actuator/env
-actuator=/actuator/heapdump
-actuator=/actuator/mappings
+# ── Exposed config / env / secrets ───────────────────────────────────────────
+# dotfiles that leak VCS, cloud creds, editor/shell state:
+re: secret-file=(?i)/\.(env|git|aws|ssh|svn|hg|docker|vscode|idea|npmrc|netrc|htpasswd|htaccess|ds_store|bash_history)(/|$|\.)
+# named config/secret files by keyword + extension (appsettings.json, application.yml,
+# docker-compose.yml, *.tfstate, service-account.json, sftp-config.json, parameters.yml…):
+re: secret-file=(?i)/[a-z0-9_.-]{0,40}(env|config|compose|secret|credential|appsettings|application|parameters|serverless|terraform|service-account)[a-z0-9_.-]{0,40}\.(json|ya?ml|ini|xml|env|properties|toml|tfstate|pem|key|py)($|[?])
+# private keys, credential dirs, framework log leaks:
+re: secret-file=(?i)(id_rsa|id_dsa|/credentials|/secrets|\.pem($|[?])|/storage/logs/)
 
-# --- Web shells ---
-webshell=/shell.php
-webshell=/c99.php
-webshell=/r57.php
-webshell=/alfa.php
-webshell=/cmd.php
-webshell=/wso.php
-webshell=/up.php
+# ── Backups & DB dumps ───────────────────────────────────────────────────────
+re: backup-dump=(?i)((/backup|/dump|/database|/db)[a-z0-9_.-]{0,40}\.(sql|zip|tar|t?gz|7z|rar|bak)($|[?])|\.(sql|bak|old|swp)($|[?]))
 
-# --- Router / IoT exploits ---
-router=/boaform
-router=/hnap1
-router=/setup.cgi
-router=/GponForm
-router=/goform/
-router=/admin/formLogin
+# ── Admin / login panels & DB managers ───────────────────────────────────────
+re: admin-panel=(?i)(/wp-admin|/administrator|/manager/html|/cpanel|/plesk|/dbadmin|/myadmin|/pma|/adminer|/phpmyadmin|/user/login|/admin/(login|config|index))
 
-# --- Exchange / OWA ---
-exchange=/owa/
-exchange=/ecp/
-exchange=/autodiscover
-exchange=/ews/exchange.asmx
+# ── Framework / app CVE probes (Spring, Solr, Laravel, ThinkPHP, Jira, …) ─────
+re: framework-cve=(?i)(/actuator|/solr/|/jenkins|/hudson|/_ignition|/vendor/phpunit|/telescope|thinkphp|struts|/druid/|/_profiler|/debug/default|jira-web|/meta-inf/|/web-inf/)
 
-# --- Cloud metadata ---
-cloud-metadata=/latest/meta-data
-cloud-metadata=/metadata/identity
-cloud-metadata=/computeMetadata/
+# ── API / service discovery & enumeration ────────────────────────────────────
+re: api-discovery=(?i)(/swagger|/api-docs|/openapi|/graphql|/v2/_catalog|/v2/api-docs|/_all_dbs|/api/jsonws)
 
-# --- Backup & DB dumps ---
-backup=/backup.zip
-backup=/backup.sql
-backup=/backup.tar
-backup=/dump.sql
-backup=/database.sql
-backup=/db.sql
+# ── Server info leaks (Spring /actuator/* is owned by framework-cve above) ───
+re: server-info=(?i)(/phpinfo|/info\.php|server-status|server-info)
 
-# --- CMS/app scan targets ---
-solr=/solr/
-jenkins=/jenkins/
-joomla=/administrator/index.php
-drupal=/user/register
-magento=/downloader
+# ── Router / IoT device exploits ─────────────────────────────────────────────
+re: router-iot=(?i)(/boaform|/hnap1|/goform|/gponform|/setup\.cgi|/cgi-bin/|/dana-na/|/currentsetting\.htm)
 
-# --- Env leaks via regex ---
-re: env-file-any=/\.env($|\.|/)
-re: dotfile=/\.[a-z_]+/config
-re: traversal=(\.\.|%2e%2e)(/|\\\\|%2f|%5c)
+# ── Cloud metadata (SSRF targets) ────────────────────────────────────────────
+re: cloud-metadata=(?i)(/latest/meta-data|/computemetadata|/metadata/identity|169\.254\.169\.254)
 
-# --- Misc well-known probe paths ---
-probe=/robots.txt.bak
-probe=/.htaccess
-probe=/.htpasswd
-probe=/wordpress/
-probe=/old/
-probe=/test/
-probe=/bak/
+# ── Path traversal / LFI ─────────────────────────────────────────────────────
+re: traversal-lfi=(?i)(\.\.(/|\\|%2f|%5c)|%2e%2e|/etc/passwd|php://|/proc/self)
+
+# ── Exchange / OWA ───────────────────────────────────────────────────────────
+re: exchange=(?i)(/owa/|/ecp/|/autodiscover|/ews/exchange)
+
+# ── RCE / injection markers (Log4Shell, shellshock, command injection) ───────
+re: rce-injection=(?i)(\$\{jndi:|/bin/(sh|bash)|;(wget|curl)|eval\(|system\()
