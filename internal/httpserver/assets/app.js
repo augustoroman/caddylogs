@@ -2522,7 +2522,7 @@ async function refreshAllowlist() {
 // toggles hidden. Remembered state is keyed per-section in localStorage
 // so preferences survive reloads; unset keys fall back to collapsed,
 // which keeps the initial dashboard view compact.
-function initCollapsibleSection({ titleSelector, bodySelector, storageKey }) {
+function initCollapsibleSection({ titleSelector, bodySelector, storageKey, onExpand }) {
   const title = document.querySelector(titleSelector);
   const body = document.querySelector(bodySelector);
   if (!title || !body) return;
@@ -2536,6 +2536,7 @@ function initCollapsibleSection({ titleSelector, bodySelector, storageKey }) {
     if (storageKey) {
       try { localStorage.setItem(storageKey, want ? '1' : '0'); } catch {}
     }
+    if (want && onExpand) onExpand();
   };
   apply(expanded);
   title.addEventListener('click', () => apply(!title.classList.contains('expanded')));
@@ -2551,51 +2552,101 @@ function initCollapsibleSection({ titleSelector, bodySelector, storageKey }) {
 // client-rendered "Classifier flags" panel can read reasons/scores
 // without its own fetch. Updated by refreshTagList.
 let latestTags = [];
+// The tag table is deliberately decoupled from the tag fetch. With tens of
+// thousands of persistent tags a naive rebuild is ~130k DOM nodes; besides
+// the app's own ~300ms of innerHTML parsing, every rebuild (and every later
+// DOM mutation anywhere on the page, while those nodes exist) makes
+// password-manager extensions re-walk the whole tree looking for form
+// fields — seconds of main-thread time that froze the timeline zoom on
+// each range change. So: nothing is rendered while the section is
+// collapsed, an unchanged payload never re-renders, rows are paged, and
+// clicks are delegated from the tbody instead of two listeners per row.
+const TAGS_PAGE_INITIAL = 200;
+const TAGS_PAGE_MORE = 1000;
+// tagsText is the raw body of the last /api/tags response. Comparing raw
+// bodies is a memcmp, so an unchanged payload (the common case on a range
+// change) costs nothing beyond the fetch: no JSON parse, no panel refill,
+// no DOM work. tagsRenderedText / tagsRenderedRows describe what the table
+// currently shows.
+let tagsText = '';
+let tagsRenderedText = null;
+let tagsRenderedRows = 0;
+let tagsShown = 0;              // rows currently in the DOM
 
 async function refreshTagList() {
   const sec = document.getElementById('tags-section');
-  const body = document.getElementById('tags-body');
   const count = document.getElementById('tags-count');
   const pathEl = document.getElementById('tags-file-path');
   try {
-    const data = await getJSON('/api/tags');
+    const r = await fetch('/api/tags');
+    if (!r.ok) throw new Error(`/api/tags: ${r.status}`);
+    const text = await r.text();
+    if (text === tagsText) return;
+    const data = JSON.parse(text);
     const tags = data.tags || [];
     latestTags = tags;
+    tagsText = text;
     // The dashboard fanout and this tag fetch race; refill the
     // client-rendered classifier panels now that the data has landed.
     refreshTagPanels();
     if (pathEl) pathEl.textContent = data.path || '';
-    if (tags.length === 0) {
-      sec.classList.add('hidden');
-      count.textContent = '0';
-      body.innerHTML = '';
-      return;
-    }
-    sec.classList.remove('hidden');
+    sec.classList.toggle('hidden', tags.length === 0);
     count.textContent = String(tags.length);
-    body.innerHTML = '';
-    for (const t of tags) {
-      const tr = document.createElement('tr');
-      const since = t.at ? fmtTs(new Date(Math.round(t.at / 1e6))) : '';
-      const source = t.source || 'manual';
-      const reasonTip = t.reason ? ` — ${t.reason}` : '';
-      tr.innerHTML = `
+    renderTagList();
+  } catch (e) {
+    console.error('tags:', e);
+  }
+}
+
+// renderTagList syncs the table with latestTags. It is a no-op while the
+// section is collapsed (initCollapsibleSection calls it again on expand) and
+// when the DOM already shows this exact payload at this page size.
+function renderTagList() {
+  const body = document.getElementById('tags-body');
+  const collapsible = document.getElementById('tags-collapsible');
+  const more = document.getElementById('tags-more');
+  if (!body) return;
+  if (collapsible && collapsible.classList.contains('hidden')) return;
+  const tags = latestTags;
+  const want = Math.min(tags.length, Math.max(tagsShown, TAGS_PAGE_INITIAL));
+  if (tagsText === tagsRenderedText && want === tagsRenderedRows) return;
+  const parts = [];
+  for (let i = 0; i < want; i++) {
+    const t = tags[i];
+    const since = t.at ? fmtTs(new Date(Math.round(t.at / 1e6))) : '';
+    const source = t.source || 'manual';
+    const reasonTip = t.reason ? ` — ${t.reason}` : '';
+    parts.push(`<tr data-ip="${escapeHTML(t.ip)}">
         <td class="tag-ip" title="click to filter by this IP">${escapeHTML(t.ip)}</td>
         <td><span class="tag-badge tag-${escapeHTML(t.tag)}">${escapeHTML(t.tag)}</span></td>
         <td class="tag-source" title="${escapeHTML(source + reasonTip)}">${escapeHTML(source)}</td>
         <td class="muted">${escapeHTML(since)}</td>
         <td class="right"><button class="btn btn-ghost tag-remove" type="button">untag</button></td>
-      `;
-      tr.querySelector('.tag-ip').addEventListener('click', () => addFilter('ip', t.ip, false));
-      tr.querySelector('.tag-remove').addEventListener('click', async () => {
-        await removeTag(t.ip);
-      });
-      body.appendChild(tr);
-    }
-  } catch (e) {
-    console.error('tags:', e);
+      </tr>`);
+  }
+  body.innerHTML = parts.join('');
+  tagsShown = want;
+  tagsRenderedText = tagsText;
+  tagsRenderedRows = want;
+  if (more) {
+    const left = tags.length - want;
+    more.classList.toggle('hidden', left <= 0);
+    more.textContent = `show ${Math.min(left, TAGS_PAGE_MORE)} more (${left} hidden)`;
   }
 }
+// One delegated handler for the whole table: the per-row IP filter and
+// untag actions read the IP off the row instead of closing over it.
+document.getElementById('tags-body').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr[data-ip]');
+  if (!tr) return;
+  const ip = tr.dataset.ip;
+  if (e.target.closest('.tag-remove')) removeTag(ip);
+  else if (e.target.closest('.tag-ip')) addFilter('ip', ip, false);
+});
+document.getElementById('tags-more').addEventListener('click', () => {
+  tagsShown = Math.min(latestTags.length, tagsShown + TAGS_PAGE_MORE);
+  renderTagList();
+});
 // --- heuristic classifiers ---
 // Classifiers are registered in Go and ship with the binary. The UI
 // lists them with a Run button that triggers a reconciliation and
@@ -2952,6 +3003,7 @@ initCollapsibleSection({
   titleSelector: '#tags-section .collapsible-title',
   bodySelector: '#tags-collapsible',
   storageKey: 'cl_tags_expanded',
+  onExpand: renderTagList,
 });
 initCollapsibleSection({
   titleSelector: '#allow-section .collapsible-title',
