@@ -2,6 +2,7 @@ package sqlitestore
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -22,6 +23,8 @@ func (s *Store) Query(ctx context.Context, q backend.Query) (*backend.Result, er
 	switch q.Kind {
 	case backend.KindOverview:
 		return s.queryOverview(ctx, table, where, args)
+	case backend.KindSpan:
+		return s.querySpan(ctx, table, where, args)
 	case backend.KindStatusClass:
 		return s.queryStatusClass(ctx, table, where, args)
 	case backend.KindTopN:
@@ -156,6 +159,39 @@ func (s *Store) queryOverview(ctx context.Context, table, where string, args []a
 		r.Overview.First = time.Unix(0, minTs).UTC()
 		r.Overview.Last = time.Unix(0, maxTs).UTC()
 	}
+	return r, nil
+}
+
+// querySpan fetches the oldest and newest matching ts as two ORDER BY ...
+// LIMIT 1 probes rather than MIN()/MAX(). SQLite's min/max shortcut only
+// fires on an aggregate with no WHERE; with the usual default exclusions
+// (is_bot, is_local) present, MIN/MAX degrade to a scan of every matching
+// row, while ORDER BY ts LIMIT 1 walks the ts index and stops at the
+// first row that passes the filter.
+func (s *Store) querySpan(ctx context.Context, table, where string, args []any) (*backend.Result, error) {
+	r := &backend.Result{Kind: backend.KindSpan}
+	probe := func(dir string) (int64, error) {
+		var ts int64
+		q := fmt.Sprintf(`SELECT ts FROM %s%s ORDER BY ts %s LIMIT 1`, table, where, dir)
+		err := s.db.QueryRowContext(ctx, q, args...).Scan(&ts)
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return ts, err
+	}
+	minTs, err := probe("ASC")
+	if err != nil {
+		return nil, err
+	}
+	if minTs == 0 {
+		return r, nil // no matching rows
+	}
+	maxTs, err := probe("DESC")
+	if err != nil {
+		return nil, err
+	}
+	r.Overview.First = time.Unix(0, minTs).UTC()
+	r.Overview.Last = time.Unix(0, maxTs).UTC()
 	return r, nil
 }
 

@@ -65,6 +65,11 @@ const (
 	KindTimeline    QueryKind = "timeline"
 	KindRows        QueryKind = "rows"
 	KindStatusClass QueryKind = "status_class"
+	// KindSpan returns only Overview.First/Last — the oldest and newest
+	// matching timestamps. Unlike KindOverview it skips the COUNT/SUM
+	// aggregates so it can be answered from the ts index alone; the
+	// dashboard uses it at boot to anchor its default "last N days" window.
+	KindSpan QueryKind = "span"
 )
 
 // Query is the single parameterized request the backend accepts.
@@ -88,11 +93,11 @@ type Query struct {
 // Result is the uniform response; only the field(s) corresponding to Kind are
 // populated.
 type Result struct {
-	Kind     QueryKind      `json:"kind"`
-	Overview Overview       `json:"overview,omitempty"`
-	TopN     []Group        `json:"topn,omitempty"`
-	Timeline []Bucket       `json:"timeline,omitempty"`
-	Rows     []EventRow     `json:"rows,omitempty"`
+	Kind     QueryKind        `json:"kind"`
+	Overview Overview         `json:"overview,omitempty"`
+	TopN     []Group          `json:"topn,omitempty"`
+	Timeline []Bucket         `json:"timeline,omitempty"`
+	Rows     []EventRow       `json:"rows,omitempty"`
 	Statuses map[string]int64 `json:"statuses,omitempty"`
 }
 
@@ -127,19 +132,19 @@ type Bucket struct {
 // includes the ingest-time classifications so the UI does not need to
 // recompute them.
 type EventRow struct {
-	Timestamp time.Time     `json:"ts"`
-	Status    int           `json:"status"`
-	Method    string        `json:"method"`
-	Host      string        `json:"host"`
-	URI       string        `json:"uri"`
-	IP        string        `json:"ip"`
-	Country   string        `json:"country,omitempty"`
-	City      string        `json:"city,omitempty"`
-	Browser   string        `json:"browser,omitempty"`
-	OS        string        `json:"os,omitempty"`
-	Device    string        `json:"device,omitempty"`
-	Duration  time.Duration `json:"duration"`
-	Size      int64         `json:"size"`
+	Timestamp       time.Time     `json:"ts"`
+	Status          int           `json:"status"`
+	Method          string        `json:"method"`
+	Host            string        `json:"host"`
+	URI             string        `json:"uri"`
+	IP              string        `json:"ip"`
+	Country         string        `json:"country,omitempty"`
+	City            string        `json:"city,omitempty"`
+	Browser         string        `json:"browser,omitempty"`
+	OS              string        `json:"os,omitempty"`
+	Device          string        `json:"device,omitempty"`
+	Duration        time.Duration `json:"duration"`
+	Size            int64         `json:"size"`
 	UserAgent       string        `json:"user_agent,omitempty"`
 	Referer         string        `json:"referer,omitempty"`
 	Proto           string        `json:"proto,omitempty"`

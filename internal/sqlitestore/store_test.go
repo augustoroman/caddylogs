@@ -81,6 +81,30 @@ func TestEndToEndWithSampleLog(t *testing.T) {
 	}
 	t.Logf("dynamic overview: %+v", ov.Overview)
 
+	// Span must agree with the overview's First/Last.
+	sp, err := store.Query(ctx, backend.Query{Table: backend.TableDynamic, Kind: backend.KindSpan})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sp.Overview.First.Equal(ov.Overview.First) || !sp.Overview.Last.Equal(ov.Overview.Last) {
+		t.Errorf("span = [%v, %v], overview = [%v, %v]",
+			sp.Overview.First, sp.Overview.Last, ov.Overview.First, ov.Overview.Last)
+	}
+	if sp.Overview.Hits != 0 {
+		t.Errorf("span should not count hits, got %d", sp.Overview.Hits)
+	}
+	// Span of an impossible filter is empty, not an error.
+	empty, err := store.Query(ctx, backend.Query{
+		Table: backend.TableDynamic, Kind: backend.KindSpan,
+		Filter: backend.Filter{Include: map[backend.Dimension][]string{backend.DimIP: {"203.0.113.254"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !empty.Overview.First.IsZero() || !empty.Overview.Last.IsZero() {
+		t.Errorf("expected zero span for no rows, got %+v", empty.Overview)
+	}
+
 	// Top IPs
 	top, err := store.Query(ctx, backend.Query{
 		Table: backend.TableDynamic, Kind: backend.KindTopN,
