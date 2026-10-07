@@ -24,6 +24,11 @@ const state = {
   // edge. Used to aim the timeline's expand/squish animation when the
   // range is cleared to "all" (there is no explicit time_from to target).
   globalFirst: null,
+  // True while the time window is the implicit default ("last
+  // DEFAULT_RANGE_DAYS days") rather than something the operator chose. The
+  // URL omits the bounds in that case so a reload re-anchors to the freshest
+  // data instead of freezing the window at an old time_from.
+  defaultRange: false,
   // Pinned filter snapshots overlaid on the timeline for comparison.
   // Each pin captures view + filter (drilldown) but NOT time range,
   // so pins follow the current time window — pins are about *what*,
@@ -167,8 +172,14 @@ function encodeStateToHash() {
   for (const [dim, vals] of Object.entries(f.contains || {})) {
     for (const v of vals) p.append('con.' + dim, v);
   }
-  if (f.time_from) p.set('from', f.time_from);
-  if (f.time_to)   p.set('to',   f.time_to);
+  // Time window: the implicit default is encoded as "nothing", an explicit
+  // "all" as range=all (so a reload doesn't re-apply the default), and any
+  // chosen window as its bounds.
+  if (!state.defaultRange) {
+    if (f.time_from) p.set('from', f.time_from);
+    if (f.time_to)   p.set('to',   f.time_to);
+    if (!f.time_from && !f.time_to) p.set('range', 'all');
+  }
   // The log-file stats overlay participates in the URL so it is deep-linkable
   // (#logs=1) and the back button closes it like leaving a page.
   if (state.fileStatsOpen) p.set('logs', '1');
@@ -194,6 +205,11 @@ function applyHashToState() {
   }
   state.filter.time_from = p.get('from') || null;
   state.filter.time_to   = p.get('to')   || null;
+  state.defaultRange = !state.filter.time_from && !state.filter.time_to
+    && p.get('range') !== 'all';
+  // On popstate the span is already known, so the default window can be
+  // derived right away; the initial load fetches it first (see boot).
+  if (state.defaultRange && state.globalLast) applyDefaultRangeWindow();
   const wantLogs = p.get('logs') === '1';
   if (wantLogs !== !!state.fileStatsOpen) {
     if (wantLogs) openFileStats(); else closeFileStats();
@@ -785,6 +801,7 @@ function setTimeWindow(fromISO, toISO) {
   beginTimelineTransition(newFromMs, newToMs);
   state.filter.time_from = fromISO;
   state.filter.time_to = toISO;
+  state.defaultRange = false;
   refreshAll();
 }
 
@@ -2783,6 +2800,13 @@ function openWS() {
       const msg = JSON.parse(ev.data);
       if (msg.type === 'event') {
         flashLive();
+        // Live rows are the freshest data; keep the presets' reference
+        // "now" tracking them so "last 7d" stays relative to real data on
+        // a long-lived page.
+        const ts = msg.row && msg.row.ts;
+        if (ts && (!state.globalLast || Date.parse(ts) > Date.parse(state.globalLast))) {
+          state.globalLast = ts;
+        }
         // Prepend into rows. Rows that wouldn't match the current view's
         // filtered query get an off-filter class so it's obvious they are
         // not part of what the panels are summarizing.
@@ -2956,6 +2980,36 @@ document.querySelectorAll('.range-btn').forEach(btn => {
     applyRangePreset(parseInt(btn.dataset.days, 10) || 0);
   });
 });
+
+// Default time window when the URL names none: the last DEFAULT_RANGE_DAYS
+// days before the freshest data. applyDefaultRangeWindow sets the filter
+// bounds from state.globalLast (no refresh, no history push); fetchDataSpan
+// learns globalLast/globalFirst cheaply at boot, before the first dashboard
+// load, so the default is anchored to the data rather than wall-clock.
+const DEFAULT_RANGE_DAYS = 30;
+function applyDefaultRangeWindow() {
+  const refEnd = state.globalLast ? Date.parse(state.globalLast) : Date.now();
+  state.filter.time_from = new Date(refEnd - DEFAULT_RANGE_DAYS * 86400000).toISOString();
+  state.filter.time_to = null;
+}
+async function fetchDataSpan() {
+  // The All view refuses unfiltered queries (and its union can't use the
+  // ts index anyway); fall back to wall-clock there.
+  if (state.view === 'all' && !hasNonTimeFilter()) return;
+  try {
+    const f = viewFilter(state.filter, state.view);
+    f.time_from = null; f.time_to = null;
+    const r = await postJSON('/api/query', { table: viewTable(state.view), kind: 'span', filter: f });
+    const ov = r.overview || {};
+    // Go's zero time serializes as year 0001; treat that as "no data".
+    if (ov.last && Date.parse(ov.last) > 0) {
+      state.globalLast = ov.last;
+      state.globalFirst = ov.first;
+    }
+  } catch (e) {
+    console.error('span:', e);
+  }
+}
 // Highlight the preset button whose window the current time filter
 // "closely" matches — whether it was set by the button itself, a
 // timeline brush, or a URL. "Closely" is a tolerance of 5% of the preset
@@ -3062,14 +3116,23 @@ window.addEventListener('popstate', () => {
 // Initial load: pick up filters from the hash (deep links, reload) and
 // normalize the URL to our canonical encoding via replaceState so the
 // first history entry already matches what refreshAll would emit.
-suppressURLSync = true;
+// One cheap span query first so the dataset's freshest timestamp is known
+// before the first load: the default "last N days" window is anchored to it,
+// and with a deep-linked window the presets / their highlight are relative
+// to the data rather than wall-clock. suppressURLSync is only raised around
+// the synchronous part so a click during the await still pushes history.
 applyHashToState();
-refreshAll();
-const initHash = encodeStateToHash();
-const curHash = (window.location.hash || '').replace(/^#/, '');
-if (initHash !== curHash) {
-  const url = initHash ? '#' + initHash : (location.pathname + location.search);
-  history.replaceState(null, '', url);
-}
-suppressURLSync = false;
-openWS();
+(async () => {
+  await fetchDataSpan();
+  if (state.defaultRange) applyDefaultRangeWindow();
+  suppressURLSync = true;
+  refreshAll();
+  const initHash = encodeStateToHash();
+  const curHash = (window.location.hash || '').replace(/^#/, '');
+  if (initHash !== curHash) {
+    const url = initHash ? '#' + initHash : (location.pathname + location.search);
+    history.replaceState(null, '', url);
+  }
+  suppressURLSync = false;
+  openWS();
+})();

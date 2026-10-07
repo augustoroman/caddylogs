@@ -231,10 +231,17 @@ substring contains (shown as a green `dim ∋ …` chip).
 Drag on the timeline to brush a time range; the drag keeps tracking
 when your cursor leaves the chart, so "from some time ago through now"
 is a single gesture. Dragging to the rightmost bucket leaves the upper
-bound open so freshly-arriving live events still appear. Six preset
-buttons in the timeline title (**7d / 30d / 3mo / 6mo / 1y / all**) jump
+bound open so freshly-arriving live events still appear. Preset buttons
+in the timeline title (**24h / 7d / 30d / 3mo / 6mo / 1y / all**) jump
 to "last N days ending at the freshest known timestamp" — useful for
-historical logs where wall-clock "last 7 days" would be empty.
+historical logs where wall-clock "last 7 days" would be empty. The
+button matching the current window (within 5% of its span) is
+highlighted.
+
+The dashboard opens on the last 30 days by default. That default is not
+written to the URL, so a reload re-anchors it to the freshest data; an
+explicitly chosen window is encoded as `#from=…&to=…` and an explicit
+**all** as `#range=all`.
 
 ### Panels
 
