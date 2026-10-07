@@ -466,6 +466,9 @@ function renderOverview(ov) {
   if (ov.first && !state.filter.time_from && !state.filter.time_to) {
     state.globalFirst = ov.first;
   }
+  // globalLast is the presets' reference "now"; re-evaluate which preset
+  // the current window matches once it's known.
+  updateRangePresetHighlight();
   el.innerHTML = `
     <div class="stat"><div class="label">Hits</div><div class="value">${fmtInt(ov.hits)}</div></div>
     <div class="stat"><div class="label">Visitors</div><div class="value">${fmtInt(ov.visitors)}</div></div>
@@ -2033,6 +2036,7 @@ let inflight = null;
 async function refreshAll() {
   syncURLFromState();
   renderChips();
+  updateRangePresetHighlight();
   if (inflight) inflight.abort();
   const ac = new AbortController();
   inflight = ac;
@@ -2952,6 +2956,37 @@ document.querySelectorAll('.range-btn').forEach(btn => {
     applyRangePreset(parseInt(btn.dataset.days, 10) || 0);
   });
 });
+// Highlight the preset button whose window the current time filter
+// "closely" matches — whether it was set by the button itself, a
+// timeline brush, or a URL. "Closely" is a tolerance of 5% of the preset
+// span (~1.2h for 24h, ~8h for 7d), so a brush that lands near a preset
+// still lights it up, while a window a day off from 7d doesn't.
+function updateRangePresetHighlight() {
+  const from = state.filter.time_from, to = state.filter.time_to;
+  const refEnd = to ? Date.parse(to)
+    : (state.globalLast ? Date.parse(state.globalLast) : Date.now());
+  document.querySelectorAll('.range-btn').forEach(btn => {
+    const days = parseInt(btn.dataset.days, 10) || 0;
+    let match;
+    if (!days) {
+      match = !from && !to;
+    } else if (!from) {
+      match = false;
+    } else {
+      const span = days * 86400000;
+      const tol = span * 0.05;
+      const fromOK = Math.abs(refEnd - span - Date.parse(from)) <= tol;
+      // An explicit time_to must also sit near the reference end the
+      // presets use (the freshest data), or the window is merely the
+      // right *length*, not the "last N days".
+      const endRef = state.globalLast ? Date.parse(state.globalLast) : Date.now();
+      const toOK = !to || Math.abs(Date.parse(to) - endRef) <= tol;
+      match = fromOK && toOK;
+    }
+    btn.classList.toggle('active', match);
+  });
+}
+updateRangePresetHighlight();
 const pinBtn = document.getElementById('pin-current');
 if (pinBtn) pinBtn.addEventListener('click', pinCurrent);
 renderPinChips();

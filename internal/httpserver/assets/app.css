@@ -274,6 +274,9 @@ a:hover { text-decoration: underline; }
   padding: 2px 8px; font-size: 10px;
   font-family: var(--mono); letter-spacing: 0.3px;
 }
+.range-presets .range-btn.active {
+  background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600;
+}
 .pin-btn {
   padding: 2px 8px; font-size: 10px;
   font-family: var(--mono); letter-spacing: 0.3px;
