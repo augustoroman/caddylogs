@@ -342,6 +342,8 @@ func dimColumn(d backend.Dimension) string {
 		return "is_static"
 	case backend.DimMalReason:
 		return "malicious_reason"
+	case backend.DimUserAgent:
+		return "user_agent"
 	}
 	return ""
 }

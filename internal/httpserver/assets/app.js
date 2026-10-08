@@ -1272,7 +1272,7 @@ const DYNAMIC_PANELS = [
   { name: 'country', title: 'Top Countries', dim: 'country' },
   { name: 'city', title: 'Top Cities', dim: 'city' },
   { name: 'referer', title: 'Top Referrers', dim: 'referer' },
-  { name: 'browser', title: 'Top Browsers', dim: 'browser' },
+  { name: 'browser', title: 'Top Browsers', dim: 'browser', filterDim: 'user_agent' },
   { name: 'os', title: 'Top OS', dim: 'os' },
   { name: 'device', title: 'Top Devices', dim: 'device' },
   { name: 'not_found', title: '404s — Not Found', dim: 'uri' },
@@ -1288,7 +1288,7 @@ const MALICIOUS_PANELS = [
   { name: 'uri', title: 'Top targeted URIs', dim: 'uri' },
   { name: 'country', title: 'Top countries', dim: 'country' },
   { name: 'city', title: 'Top cities', dim: 'city' },
-  { name: 'browser', title: 'UAs', dim: 'browser' },
+  { name: 'browser', title: 'UAs', dim: 'browser', filterDim: 'user_agent' },
   { name: 'os', title: 'OS', dim: 'os' },
   { name: 'host', title: 'Targeted hosts', dim: 'host' },
   { name: 'method', title: 'Methods', dim: 'method' },
@@ -1374,10 +1374,14 @@ function renderPanels(panels) {
     // Panel-filter input does exact-include for IP (drill-down) and
     // substring-contains for every other dimension, mirroring the old
     // top-bar inputs but per-panel. Chips still render in the filter bar.
-    const pfPlaceholder = `filter ${def.dim}…`;
-    const pfTitle = def.dim === 'ip'
+    // A panel may filter on a different dimension than it groups by:
+    // the browser panels group on the parsed name but their input
+    // matches the raw User-Agent, so any substring of the header works.
+    const pfDim = def.filterDim || def.dim;
+    const pfPlaceholder = `filter ${pfDim}…`;
+    const pfTitle = pfDim === 'ip'
       ? 'Type an IP and hit Enter to filter'
-      : `Type a substring and hit Enter to filter by ${def.dim}`;
+      : `Type a substring and hit Enter to filter by ${pfDim}`;
     sec.innerHTML = `
       <div class="panel-title">
         <span><span>${escapeHTML(def.title)}</span> <span class="muted panel-count">${initialRows.length}</span></span>
@@ -1398,8 +1402,8 @@ function renderPanels(panels) {
       if (e.key !== 'Enter') return;
       const v = pfInput.value.trim();
       if (!v) return;
-      if (def.dim === 'ip') addFilter(def.dim, v, false);
-      else addContainsFilter(def.dim, v);
+      if (pfDim === 'ip') addFilter(pfDim, v, false);
+      else addContainsFilter(pfDim, v);
       pfInput.value = '';
     });
     sec._pg = {
@@ -2422,13 +2426,14 @@ function openAllowMenu(ua, x, y) {
   menu.className = 'tag-menu allow-menu';
   menu.id = 'allow-menu';
   menu.innerHTML = `
-    <div class="tag-menu-title">Allowlist user-agent as <span class="tag-badge tag-real">real</span></div>
+    <div class="tag-menu-title">User-agent</div>
     <div class="allow-ua" title="${escapeHTML(ua)}">${escapeHTML(ua)}</div>
     <label class="allow-label">Match any UA containing:</label>
     <input class="allow-pattern" type="text" spellcheck="false" />
-    <input class="allow-note" type="text" spellcheck="false" placeholder="note (optional, e.g. scoring boxes)" />
+    <input class="allow-note" type="text" spellcheck="false" placeholder="allowlist note (optional, e.g. scoring boxes)" />
     <div class="allow-actions">
-      <button class="allow-confirm" type="button">Allowlist</button>
+      <button class="allow-filter" type="button" title="Filter the dashboard to requests whose UA contains this substring">Filter</button>
+      <button class="allow-confirm" type="button" title="Force matching requests to real (never bot, never malicious)">Allowlist as <span class="tag-badge tag-real">real</span></button>
       <button class="cancel" type="button">Cancel</button>
     </div>
   `;
@@ -2445,8 +2450,17 @@ function openAllowMenu(ua, x, y) {
     closeAllowMenu();
     await addAllow(pattern, noteEl.value.trim());
   };
+  // Enter in the pattern box filters (the cheap, reversible action);
+  // allowlisting is a deliberate click or Enter in the note box.
+  const filter = () => {
+    const pattern = patternEl.value.trim();
+    if (!pattern) { patternEl.focus(); return; }
+    closeAllowMenu();
+    addContainsFilter('user_agent', pattern);
+  };
+  menu.querySelector('.allow-filter').addEventListener('click', filter);
   menu.querySelector('.allow-confirm').addEventListener('click', submit);
-  patternEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+  patternEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); filter(); } });
   noteEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
   menu.querySelector('.cancel').addEventListener('click', closeAllowMenu);
   // Focus the pattern input and select it so the operator can immediately

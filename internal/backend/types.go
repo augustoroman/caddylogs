@@ -27,6 +27,9 @@ const (
 	DimIsLocal     Dimension = "is_local"  // value "true"/"false"
 	DimIsStatic    Dimension = "is_static" // value "true"/"false"
 	DimMalReason   Dimension = "malicious_reason"
+	// DimUserAgent is the raw User-Agent header. It is unindexed and high
+	// cardinality, so it is meant for Contains filters rather than group-by.
+	DimUserAgent Dimension = "user_agent"
 )
 
 // Filter expresses the active drill-down state. Include[d] values are OR'd
