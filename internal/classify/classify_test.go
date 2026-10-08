@@ -85,3 +85,26 @@ func TestParseUA(t *testing.T) {
 		t.Errorf("device empty")
 	}
 }
+
+// TestParseUANativeApp covers the "(iOS; ...)" / "(Android; ...)" form that
+// native apps send instead of a browser-style UA. Both platforms must parse
+// to a named OS and land in the Mobile device class.
+func TestParseUANativeApp(t *testing.T) {
+	cases := []struct {
+		ua         string
+		os, device string
+	}{
+		{"skvrs-app/1.7.2+18 (Android; unit=unknown)", "Android", "Mobile"},
+		{"skvrs-app/1.3.0+9 (iOS; unit=unknown)", "iOS", "Mobile"},
+		{"skvrs-app / iOS", "iOS", "Mobile"},
+		// Must not be mistaken for iOS by substring.
+		{"BiOS-updater/2.0", "", "Other"},
+	}
+	for _, tc := range cases {
+		ui := ParseUA(tc.ua)
+		if ui.OS != tc.os || ui.Device != tc.device {
+			t.Errorf("ParseUA(%q) = os %q device %q, want os %q device %q",
+				tc.ua, ui.OS, ui.Device, tc.os, tc.device)
+		}
+	}
+}
